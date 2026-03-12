@@ -150,14 +150,7 @@ impl crate::Context for Context<'_> {
 
     fn create_buffer(&self, layout: BufferLayout) -> Result<Self::Buffer, Error> {
         unsafe {
-            let max_capacity = match layout.role {
-                BufferRole::Uniform => self.features.max_uniform_buffer_size,
-                BufferRole::Storage => self.features.max_storage_buffer_size,
-                BufferRole::Vertex => 0,
-                BufferRole::Index => 0, // unimplemented yet
-            };
-
-            if layout.capacity > max_capacity {
+            if layout.capacity > self.features.max_buffer_size(layout.role) {
                 return Err(Error::UnsupportedSize);
             }
 
