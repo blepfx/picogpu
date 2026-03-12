@@ -1,0 +1,20 @@
+[package]
+name = "picogpu"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+glow = { version = "0.16", optional = true }
+ash = { version = "0.38", optional = true }
+
+[dev-dependencies]
+picoview = { git = "https://github.com/blepfx/picoview.git" }
+
+[features]
+default = ["opengl", "vulkan"]
+opengl = ["dep:glow"]
+vulkan = ["dep:ash"]
+
+[[example]]
+name = "opengl"
+features = ["opengl"]
