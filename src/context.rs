@@ -105,7 +105,7 @@ pub trait Context {
     /// - [Error::InvalidBounds] if the offset and data size exceed the buffer capacity, or if the
     ///   offset does not match alignment requirements for the buffer layout.
     /// - [Error::Internal] if an internal error occurs while uploading the data.
-    fn upload_buffer(&self, buffer: &Self::Buffer, offset: u32, data: &[u8]) -> Result<(), Error>;
+    fn upload_buffer(&self, buffer: &Self::Buffer, offset: u64, data: &[u8]) -> Result<(), Error>;
 
     /// Copies data from one buffer to another, replacing the contents of the destination buffer at
     /// the given offset. The source and destination regions must not overlap if the source and
@@ -120,11 +120,11 @@ pub trait Context {
     /// - [Error::Internal] if an internal error occurs while copying the data.
     fn copy_buffer(
         &self,
-        buffer: &Self::Buffer,
-        source_buffer: &Self::Buffer,
-        offset: u32,
-        source_offset: u32,
-        size: u32,
+        dst_buffer: &Self::Buffer,
+        src_buffer: &Self::Buffer,
+        dst_offset: u64,
+        src_offset: u64,
+        size: u64,
     ) -> Result<(), Error>;
 
     /// Invalidates a region of a buffer, indicating that the contents of that region are no longer
@@ -136,8 +136,7 @@ pub trait Context {
     /// - [Error::InvalidBounds] if the offset and size exceed the buffer capacity, or if the offset
     ///   does not match alignment requirements for the buffer layout.
     /// - [Error::Internal] if an internal error occurs while invalidating the buffer.
-    fn invalidate_buffer(&self, buffer: &Self::Buffer, offset: u32, size: u32)
-    -> Result<(), Error>;
+    fn invalidate_buffer(&self, buffer: &Self::Buffer, offset: u64, size: u64) -> Result<(), Error>;
 
     /// Reads data from a framebuffer, copying the contents of the specified bounds into the
     /// provided data buffer. This is a slow operation, and should be avoided if possible.
@@ -202,7 +201,7 @@ pub struct Capabilities {
     pub texture_bindings: u32,
 
     /// Maximum supported size of a buffer with role [`BufferRole::Uniform`], in bytes.
-    pub uniform_buffer_size: u32,
+    pub uniform_buffer_size: u64,
     /// Alignment requirement for uniform buffer offsets, in bytes.
     pub uniform_buffer_alignment: u32,
     /// Maximum supported number of uniform buffer bindings per drawcall.
@@ -218,7 +217,7 @@ pub struct Capabilities {
 
 /// A generic error type for all possible operations in the context.
 ///
-/// This is a "god" error type. While it is not often desirable to have a catch-all error type,
+/// This is a catch-all error type. While it is not often desirable to have a catch-all error type,
 /// it simplifies maintenance and API by a lot, and you should not be doing exhaustive matching on
 /// it anyway, since it is marked as non-exhaustive and can have new variants added in the future
 /// without a major version bump.
@@ -319,26 +318,38 @@ mod buffer {
     /// The layout of a buffer, used for creating a buffer with the desired specifications.
     #[derive(Debug, Clone, Copy)]
     pub struct BufferLayout {
-        /// The role of the buffer, which determines how it is expected to be used
+        /// The role of the buffer, which determines how it is expected to be used.
         pub role: BufferRole,
-        /// The capacity of the buffer in bytes.
-        pub capacity: u32,
-        /// Whether the buffer is expected to be updated frequently with new data. This is a hint
-        /// that can result in better performance if used correctly.
+        /// The capacity of the buffer in bytes. Must be less than or equal to the maximum buffer
+        /// size supported by the backend for the given role.
+        pub capacity: u64,
+        /// Whether the buffer is expected to be updated frequently with new data.
+        ///
+        /// As a rule of thumb, if you plan to update it once or twice over the lifetime of the
+        /// buffer, you can set this to false, but if you plan to update it every frame or so, you
+        /// should set this to true. This is a hint to the backend that can help with choosing the
+        /// right memory type and usage for the buffer.
         pub dynamic: bool,
     }
 }
 
 mod texture {
+    /// Texture format, which determines how the color pixel data is stored and/or interpreted.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     #[non_exhaustive]
     pub enum TextureFormat {
+        /// 8-bit unsigned normalized red channel (0..1)
         R8,
+        /// 8-bit unsigned normalized red, green, blue channels (0..1)
         RGB8,
+        /// 8-bit unsigned normalized red, green, blue, alpha channels (0..1)
         RGBA8,
 
-        R8Snorm,
-        R16Snorm,
+        /// 8-bit signed normalized red channel (-1..1)
+        R8S,
+        /// 16-bit signed normalized red channel (-1..1)
+        R16S,
+        /// 32-bit floating point red channel
         R32F,
     }
 
@@ -405,8 +416,8 @@ mod texture {
                 TextureFormat::R8 => 1,
                 TextureFormat::RGB8 => 3,
                 TextureFormat::RGBA8 => 4,
-                TextureFormat::R8Snorm => 1,
-                TextureFormat::R16Snorm => 2,
+                TextureFormat::R8S => 1,
+                TextureFormat::R16S => 2,
                 TextureFormat::R32F => 4,
             }
         }
@@ -500,6 +511,7 @@ mod shader {
 mod pipeline {
     use crate::{Shader, TextureFormat};
 
+    /// The layout of a pipeline, used for creating a pipeline with the desired specifications.
     #[derive(Debug, Clone)]
     pub struct PipelineLayout<'a> {
         /// The shader (vertex and fragment) used by this pipeline
@@ -539,6 +551,7 @@ mod pipeline {
         Always,
     }
 
+    /// A stencil operation, which determines how the stencil is updated after a test.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum StencilOp {
         Keep,
@@ -551,6 +564,7 @@ mod pipeline {
         DecrementWrap,
     }
 
+    /// Stencil test and operations for a face (clockwise or counter-clockwise wound triangles)
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     #[repr(align(8))]
     pub struct StencilFace {
@@ -562,6 +576,9 @@ mod pipeline {
         pub depth_fail_op: StencilOp,
     }
 
+    /// Blend mode multiplier
+    ///
+    /// See [BlendMode] for how these are used in blending.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum BlendFactor {
         Zero,
@@ -576,6 +593,9 @@ mod pipeline {
         OneMinusDstAlpha,
     }
 
+    /// Blend mode operation
+    ///
+    /// See [BlendMode] for how these are used in blending.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum BlendOp {
         Add,
@@ -585,6 +605,12 @@ mod pipeline {
         Max,
     }
 
+    /// Blend mode, which determines how the source and destination colors are blended together
+    ///
+    /// The blend formula is:
+    /// ```
+    /// result = (src_value * src_factor) <color_op> (dst_value * dst_factor)
+    /// ```
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     #[repr(align(8))]
     pub struct BlendMode {
@@ -598,6 +624,7 @@ mod pipeline {
     }
 
     impl BlendMode {
+        /// Opaque blending mode (overwrite)
         pub const OPAQUE: Self = Self {
             color_src: BlendFactor::One,
             color_dst: BlendFactor::Zero,
@@ -608,6 +635,7 @@ mod pipeline {
             alpha_op: BlendOp::Add,
         };
 
+        /// Simple alpha blending mode
         pub const ALPHA: Self = Self {
             color_src: BlendFactor::SrcAlpha,
             color_dst: BlendFactor::OneMinusSrcAlpha,
@@ -618,6 +646,7 @@ mod pipeline {
             alpha_op: BlendOp::Add,
         };
 
+        /// Premultiplied alpha blending mode
         pub const PREMUL: Self = Self {
             color_src: BlendFactor::One,
             color_dst: BlendFactor::OneMinusSrcAlpha,

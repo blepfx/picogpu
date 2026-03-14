@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-glow = { version = "0.16", optional = true }
+glow = { version = "0.17", optional = true }
 ash = { version = "0.38", optional = true }
 
 [dev-dependencies]
@@ -17,4 +17,4 @@ vulkan = ["dep:ash"]
 
 [[example]]
 name = "opengl"
-features = ["opengl"]
+required-features = ["opengl"]

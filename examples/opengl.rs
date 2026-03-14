@@ -3,25 +3,25 @@ use picogpu::*;
 fn main() {
     picoview::WindowBuilder::new(|window| {
         let opengl = window.opengl().unwrap();
-        let context = unsafe {
-            assert!(opengl.make_current(true));
-            opengl::Backend::new(&mut |x| opengl.get_proc_address(x) as *const _).unwrap()
-        };
+        opengl.make_current(true).unwrap();
 
-        let buffer = unsafe {
-            context
-                .begin()
-                .create_buffer(BufferLayout {
-                    capacity: 32,
-                    dynamic: true,
-                    role: BufferRole::Uniform,
-                })
-                .unwrap()
-        };
+        let mut backend = unsafe { opengl::Backend::new(|x| opengl.get_proc_address(x) as *const _).unwrap() };
+        let mut context = unsafe { backend.begin() };
 
-        let texture = unsafe {
+        context.attach_debug_callback(|kind, message| {
+            println!("[{:?}] {}", kind, message);
+        });
+
+        let buffer = context
+            .create_buffer(BufferLayout {
+                capacity: 32,
+                dynamic: true,
+                role: BufferRole::Uniform,
+            })
+            .unwrap();
+
+        let texture = {
             let texture = context
-                .begin()
                 .create_texture(TextureLayout {
                     width: 8,
                     height: 8,
@@ -46,7 +46,6 @@ fn main() {
             }
 
             context
-                .begin()
                 .upload_texture(
                     &texture,
                     TextureBounds {
@@ -63,34 +62,15 @@ fn main() {
             texture
         };
 
-        let framebuffer  = unsafe {
-            context
-                .begin()
-                .create_framebuffer(FramebufferLayout {
-                    color: Some(TextureFormat::RGBA8),
-                    depth: None,
-                    msaa_samples: 0,
-                    is_color_bindable: false,
-                    is_depth_bindable: false,
-                    is_persistent: false,
-                    width: 200,
-                    height: 200,
-                })
-                .unwrap()
-        };
+        let profiler_1 = { context.create_profiler().unwrap() };
 
-        let profiler_1 = unsafe {
-            context.begin().create_profiler().unwrap()
-        };
-
-        unsafe {
-            let caps = context.begin().capabilities();
+        {
+            let caps = context.capabilities();
             dbg!(caps);
         }
 
-        let pipeline = unsafe {
+        let pipeline = {
             context
-                .begin()
                 .create_pipeline(PipelineLayout {
                     shader: ShaderGlsl {
                         vertex: r#"
@@ -147,12 +127,12 @@ fn main() {
                 frames += 1;
 
                 let context = unsafe {
-                    assert!(opengl.make_current(true));
-                    context.begin()
+                    opengl.make_current(true).unwrap();
+                    backend.begin()
                 };
-                
+
                 context.begin_profiler(&profiler_1);
-               
+
                 for i in 0..100 {
                     {
                         let x = 0.5 + 5.0 * (frames as f32 * 0.01 + i as f32 * 0.0001).cos();
@@ -169,50 +149,48 @@ fn main() {
                     }
 
                     context
-                    .draw(DrawRequest {
-                        target: &framebuffer,
-                        pipeline: &pipeline,
+                        .draw(DrawRequest {
+                            target: context.screen(),
+                            pipeline: &pipeline,
 
-                        color_op: MemoryOp {
-                            load: LoadOp::Clear([0.0, 0.0, 0.0, 1.0]),
-                            store: StoreOp::Store,
-                        },
-                        depth_op: MemoryOp {
-                            load: LoadOp::Clear(1.0),
-                            store: StoreOp::Store,
-                        },
-                        stencil_op: MemoryOp {
-                            load: LoadOp::Clear(0),
-                            store: StoreOp::Store,
-                        },
-
-                        viewport: TextureBounds {
-                            x: 0,
-                            y: 0,
-                            width: 200,
-                            height: 200,
-                        },
-
-                        scissor: None,
-                        triangles: 2,
-
-                        bindings: &[
-                            BindingData::Buffer {
-                                buffer: &buffer,
-                                offset: 0,
-                                size: 32,
+                            color_op: MemoryOp {
+                                load: LoadOp::Clear([0.0, 0.0, 0.0, 1.0]),
+                                store: StoreOp::Store,
                             },
-                            BindingData::Texture { texture: &texture },
-                        ],
-                    })
-                    .unwrap();
+                            depth_op: MemoryOp {
+                                load: LoadOp::Clear(1.0),
+                                store: StoreOp::Store,
+                            },
+                            stencil_op: MemoryOp {
+                                load: LoadOp::Clear(0),
+                                store: StoreOp::Store,
+                            },
+
+                            viewport: TextureBounds {
+                                x: 0,
+                                y: 0,
+                                width: 200,
+                                height: 200,
+                            },
+
+                            scissor: None,
+                            triangles: 2,
+
+                            bindings: &[
+                                BindingData::Buffer {
+                                    buffer: &buffer,
+                                    offset: 0,
+                                    size: 32,
+                                },
+                                BindingData::Texture { texture: &texture },
+                            ],
+                        })
+                        .unwrap();
                 }
 
-                dbg!(context.end_profiler(&profiler_1));
+                context.end_profiler(&profiler_1);
 
-                unsafe {
-                    opengl.swap_buffers();
-                }
+                opengl.swap_buffers().unwrap();
             }
 
             picoview::Event::WindowClose => {
@@ -223,6 +201,7 @@ fn main() {
     })
     .with_opengl(picoview::GlConfig {
         version: picoview::GlVersion::Compat(1, 1),
+        msaa_count: 4,
         ..Default::default()
     })
     .open_blocking()

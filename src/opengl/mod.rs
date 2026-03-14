@@ -16,13 +16,15 @@ pub struct Backend {
 }
 
 pub struct Context<'a> {
-    gl: &'a glow::Context,
+    gl: &'a mut glow::Context,
     features: &'a Features,
 
     last_pipeline: Cell<Option<glow::Program>>,
     last_viewport: Cell<Option<TextureBounds>>,
     last_scissor: Cell<Option<Option<TextureBounds>>>,
     last_framebuffer: Cell<Option<Option<glow::Framebuffer>>>,
+
+    _not_send_sync: core::marker::PhantomData<*mut ()>,
 }
 
 #[derive(Debug)]
@@ -71,18 +73,43 @@ pub struct Profiler {
     query: glow::Query,
 }
 
+/// The type of OpenGL debug message sent to the debug callback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DebugMessage {
+    /// An error message.
+    Error,
+
+    /// Deprecated functionality was used.
+    Deprecated,
+
+    /// Undefined behavior was detected.
+    UndefinedBehavior,
+
+    /// Performance issues were detected.   
+    Performance,
+
+    /// A portability issue was detected.
+    Portability,
+
+    /// Marker?
+    Marker,
+
+    ///  Other/unknown message.
+    Other,
+}
+
 impl Backend {
     /// # Safety
     ///
     /// The caller must ensure that the provided loader function correctly loads OpenGL function
     /// pointers and that the OpenGL context is properly initialized before calling this function.
-    pub unsafe fn new(loader: &mut dyn FnMut(&CStr) -> *const c_void) -> Result<Self, Error> {
+    pub unsafe fn new(mut loader: impl FnMut(&CStr) -> *const c_void) -> Result<Self, Error> {
         unsafe {
-            if !is_context_valid(loader) {
+            if !is_context_valid(&mut loader) {
                 return Err(Error::InvalidContext);
             }
 
-            let gl = glow::Context::from_loader_function_cstr(|c| loader(c));
+            let gl = glow::Context::from_loader_function_cstr(loader);
             let features = Features::from_context(&gl);
 
             Ok(Self { features, gl })
@@ -94,20 +121,42 @@ impl Backend {
     /// The caller must ensure that the OpenGL context is current and valid for the duration of the
     /// returned `Context` instance.
     #[inline]
-    pub unsafe fn begin(&self) -> Context<'_> {
+    pub unsafe fn begin(&mut self) -> Context<'_> {
         Context {
-            gl: &self.gl,
+            gl: &mut self.gl,
             features: &self.features,
 
             last_pipeline: Cell::new(None),
             last_scissor: Cell::new(None),
             last_viewport: Cell::new(None),
             last_framebuffer: Cell::new(None),
+
+            _not_send_sync: core::marker::PhantomData,
         }
     }
 }
 
 impl Context<'_> {
+    pub fn attach_debug_callback(&mut self, callback: impl Fn(DebugMessage, &str) + Send + Sync + 'static) {
+        unsafe {
+            self.gl.enable(glow::DEBUG_OUTPUT);
+            self.gl.enable(glow::DEBUG_OUTPUT_SYNCHRONOUS);
+            self.gl.debug_message_callback(move |_, type_, _, _, message| {
+                let type_ = match type_ {
+                    glow::DEBUG_TYPE_ERROR => DebugMessage::Error,
+                    glow::DEBUG_TYPE_DEPRECATED_BEHAVIOR => DebugMessage::Deprecated,
+                    glow::DEBUG_TYPE_UNDEFINED_BEHAVIOR => DebugMessage::UndefinedBehavior,
+                    glow::DEBUG_TYPE_PORTABILITY => DebugMessage::Portability,
+                    glow::DEBUG_TYPE_PERFORMANCE => DebugMessage::Performance,
+                    glow::DEBUG_TYPE_MARKER => DebugMessage::Marker,
+                    _ => DebugMessage::Other,
+                };
+
+                callback(type_, message);
+            });
+        }
+    }
+
     /// A framebuffer handle representing the screen, used for drawing to the screen and reading
     /// pixels from it.
     pub fn screen(&self) -> &Framebuffer {
@@ -139,7 +188,7 @@ impl crate::Context for Context<'_> {
             texture_bindings: self.features.max_texture_image_units,
             framebuffer_size: self.features.max_framebuffer_size,
             framebuffer_msaa: self.features.max_framebuffer_msaa,
-            uniform_buffer_size: self.features.max_uniform_buffer_size,
+            uniform_buffer_size: self.features.max_uniform_buffer_size as u64,
             storage_buffer_size: self.features.max_storage_buffer_size,
             uniform_buffer_alignment: self.features.uniform_buffer_offset_alignment,
             storage_buffer_alignment: self.features.storage_buffer_offset_alignment,
@@ -150,18 +199,26 @@ impl crate::Context for Context<'_> {
 
     fn create_buffer(&self, layout: BufferLayout) -> Result<Self::Buffer, Error> {
         unsafe {
-            if layout.capacity > self.features.max_buffer_size(layout.role) {
+            if self.features.max_buffer_size(layout.role) == 0 {
+                return Err(Error::UnsupportedFeature);
+            }
+
+            let capacity: u32 = match layout.capacity.try_into() {
+                Ok(capacity) => capacity,
+                Err(_) => return Err(Error::UnsupportedSize),
+            };
+
+            if capacity > self.features.max_buffer_size(layout.role) {
                 return Err(Error::UnsupportedSize);
             }
 
             let buffer = self.gl.create_buffer().map_err(Error::Internal)?;
 
-            self.gl
-                .bind_buffer(buffer_target(layout.role), Some(buffer));
+            self.gl.bind_buffer(buffer_target(layout.role), Some(buffer));
 
             self.gl.buffer_data_size(
                 buffer_target(layout.role),
-                layout.capacity as i32,
+                capacity as i32,
                 if layout.dynamic {
                     glow::DYNAMIC_DRAW
                 } else {
@@ -171,7 +228,7 @@ impl crate::Context for Context<'_> {
 
             Ok(Buffer {
                 buffer,
-                capacity: layout.capacity,
+                capacity,
                 is_dynamic: layout.dynamic,
                 role: layout.role,
             })
@@ -256,22 +313,16 @@ impl crate::Context for Context<'_> {
                 // todo
             };
 
-            let program =
-                DisposeOnDrop::new(self.gl.create_program().map_err(Error::Internal)?, |obj| {
-                    self.gl.delete_program(obj)
-                });
+            let program = DisposeOnDrop::new(self.gl.create_program().map_err(Error::Internal)?, |obj| {
+                self.gl.delete_program(obj)
+            });
 
-            let vertex_array = DisposeOnDrop::new(
-                self.gl.create_vertex_array().map_err(Error::Internal)?,
-                |obj| self.gl.delete_vertex_array(obj),
-            );
+            let vertex_array = DisposeOnDrop::new(self.gl.create_vertex_array().map_err(Error::Internal)?, |obj| {
+                self.gl.delete_vertex_array(obj)
+            });
 
             let [vertex, fragment] = [false, true].map(|is_fragment| {
-                let source = if is_fragment {
-                    shader.fragment
-                } else {
-                    shader.vertex
-                };
+                let source = if is_fragment { shader.fragment } else { shader.vertex };
 
                 let shader = DisposeOnDrop::new(
                     self.gl
@@ -315,8 +366,7 @@ impl crate::Context for Context<'_> {
             self.gl.detach_shader(*program, *vertex);
             self.gl.detach_shader(*program, *fragment);
 
-            let bindings =
-                prepare_pipeline_bindings(self.gl, self.features, *program, shader.bindings)?;
+            let bindings = prepare_pipeline_bindings(self.gl, self.features, *program, shader.bindings)?;
 
             Ok(Pipeline {
                 bindings,
@@ -345,23 +395,20 @@ impl crate::Context for Context<'_> {
                 return Err(Error::UnsupportedSampleCount);
             }
 
-            let framebuffer =
-                DisposeOnDrop::new(gl.create_framebuffer().map_err(Error::Internal)?, |obj| {
-                    gl.delete_framebuffer(obj)
-                });
+            let framebuffer = DisposeOnDrop::new(gl.create_framebuffer().map_err(Error::Internal)?, |obj| {
+                gl.delete_framebuffer(obj)
+            });
 
-            self.gl
-                .bind_framebuffer(glow::FRAMEBUFFER, Some(*framebuffer));
+            self.gl.bind_framebuffer(glow::FRAMEBUFFER, Some(*framebuffer));
 
             // this is a cursed try block
             let (color_texture, color_renderbuffer) = if let Some(format) = layout.color {
                 let (format, data_type, internal_format) = color_format(format);
 
                 if layout.is_color_bindable {
-                    let texture = DisposeOnDrop::new(
-                        self.gl.create_texture().map_err(Error::Internal)?,
-                        |obj| self.gl.delete_texture(obj),
-                    );
+                    let texture = DisposeOnDrop::new(self.gl.create_texture().map_err(Error::Internal)?, |obj| {
+                        self.gl.delete_texture(obj)
+                    });
 
                     self.gl.bind_texture(glow::TEXTURE_2D, Some(*texture));
 
@@ -388,17 +435,9 @@ impl crate::Context for Context<'_> {
                         );
                     }
 
-                    gl.tex_parameter_i32(
-                        glow::TEXTURE_2D,
-                        glow::TEXTURE_MIN_FILTER,
-                        glow::NEAREST as i32,
-                    );
+                    gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::NEAREST as i32);
 
-                    gl.tex_parameter_i32(
-                        glow::TEXTURE_2D,
-                        glow::TEXTURE_MAG_FILTER,
-                        glow::NEAREST as i32,
-                    );
+                    gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::NEAREST as i32);
 
                     gl.framebuffer_texture_2d(
                         glow::FRAMEBUFFER,
@@ -410,10 +449,9 @@ impl crate::Context for Context<'_> {
 
                     (Some(texture), None)
                 } else {
-                    let buffer = DisposeOnDrop::new(
-                        self.gl.create_renderbuffer().map_err(Error::Internal)?,
-                        |obj| self.gl.delete_renderbuffer(obj),
-                    );
+                    let buffer = DisposeOnDrop::new(self.gl.create_renderbuffer().map_err(Error::Internal)?, |obj| {
+                        self.gl.delete_renderbuffer(obj)
+                    });
 
                     self.gl.bind_renderbuffer(glow::RENDERBUFFER, Some(*buffer));
 
@@ -451,10 +489,9 @@ impl crate::Context for Context<'_> {
                 let (format, attachment) = depth_format(format);
 
                 if layout.is_depth_bindable {
-                    let texture = DisposeOnDrop::new(
-                        self.gl.create_texture().map_err(Error::Internal)?,
-                        |obj| self.gl.delete_texture(obj),
-                    );
+                    let texture = DisposeOnDrop::new(self.gl.create_texture().map_err(Error::Internal)?, |obj| {
+                        self.gl.delete_texture(obj)
+                    });
 
                     self.gl.bind_texture(glow::TEXTURE_2D, Some(*texture));
 
@@ -481,20 +518,13 @@ impl crate::Context for Context<'_> {
                         );
                     }
 
-                    gl.framebuffer_texture_2d(
-                        glow::FRAMEBUFFER,
-                        attachment,
-                        glow::TEXTURE_2D,
-                        Some(*texture),
-                        0,
-                    );
+                    gl.framebuffer_texture_2d(glow::FRAMEBUFFER, attachment, glow::TEXTURE_2D, Some(*texture), 0);
 
                     (Some(texture), None)
                 } else {
-                    let buffer = DisposeOnDrop::new(
-                        self.gl.create_renderbuffer().map_err(Error::Internal)?,
-                        |obj| self.gl.delete_renderbuffer(obj),
-                    );
+                    let buffer = DisposeOnDrop::new(self.gl.create_renderbuffer().map_err(Error::Internal)?, |obj| {
+                        self.gl.delete_renderbuffer(obj)
+                    });
 
                     self.gl.bind_renderbuffer(glow::RENDERBUFFER, Some(*buffer));
 
@@ -515,12 +545,8 @@ impl crate::Context for Context<'_> {
                         );
                     }
 
-                    self.gl.framebuffer_renderbuffer(
-                        glow::FRAMEBUFFER,
-                        attachment,
-                        glow::RENDERBUFFER,
-                        Some(*buffer),
-                    );
+                    self.gl
+                        .framebuffer_renderbuffer(glow::FRAMEBUFFER, attachment, glow::RENDERBUFFER, Some(*buffer));
 
                     (None, Some(buffer))
                 }
@@ -594,21 +620,18 @@ impl crate::Context for Context<'_> {
         unsafe { self.gl.delete_query(profiler.query) };
     }
 
-    fn invalidate_buffer(
-        &self,
-        buffer: &Self::Buffer,
-        offset: u32,
-        size: u32,
-    ) -> Result<(), Error> {
+    fn invalidate_buffer(&self, buffer: &Self::Buffer, offset: u64, size: u64) -> Result<(), Error> {
         unsafe {
+            let size: u32 = size.try_into().map_err(|_| Error::InvalidBounds)?;
+            let offset: u32 = offset.try_into().map_err(|_| Error::InvalidBounds)?;
+
             if offset.saturating_add(size) > buffer.capacity
                 || !offset.is_multiple_of(self.features.buffer_alignment(buffer.role))
             {
                 return Err(Error::InvalidBounds);
             }
 
-            self.gl
-                .bind_buffer(buffer_target(buffer.role), Some(buffer.buffer));
+            self.gl.bind_buffer(buffer_target(buffer.role), Some(buffer.buffer));
 
             if offset == 0 && size == buffer.capacity {
                 self.gl.buffer_data_size(
@@ -621,11 +644,8 @@ impl crate::Context for Context<'_> {
                     },
                 );
             } else if self.features.invalidate_buffer_sub_data {
-                self.gl.invalidate_buffer_sub_data(
-                    buffer_target(buffer.role),
-                    offset as i32,
-                    size as i32,
-                );
+                self.gl
+                    .invalidate_buffer_sub_data(buffer_target(buffer.role), offset as i32, size as i32);
             }
 
             Ok(())
@@ -636,11 +656,15 @@ impl crate::Context for Context<'_> {
         &self,
         buffer: &Self::Buffer,
         source_buffer: &Self::Buffer,
-        offset: u32,
-        source_offset: u32,
-        size: u32,
+        offset: u64,
+        source_offset: u64,
+        size: u64,
     ) -> Result<(), Error> {
         unsafe {
+            let size: u32 = size.try_into().map_err(|_| Error::InvalidBounds)?;
+            let offset: u32 = offset.try_into().map_err(|_| Error::InvalidBounds)?;
+            let source_offset: u32 = source_offset.try_into().map_err(|_| Error::InvalidBounds)?;
+
             if !offset.is_multiple_of(self.features.buffer_alignment(buffer.role))
                 || !source_offset.is_multiple_of(self.features.buffer_alignment(source_buffer.role))
             {
@@ -659,10 +683,8 @@ impl crate::Context for Context<'_> {
                 return Err(Error::InvalidBounds);
             }
 
-            self.gl
-                .bind_buffer(glow::COPY_READ_BUFFER, Some(source_buffer.buffer));
-            self.gl
-                .bind_buffer(glow::COPY_WRITE_BUFFER, Some(buffer.buffer));
+            self.gl.bind_buffer(glow::COPY_READ_BUFFER, Some(source_buffer.buffer));
+            self.gl.bind_buffer(glow::COPY_WRITE_BUFFER, Some(buffer.buffer));
 
             self.gl.copy_buffer_sub_data(
                 glow::COPY_READ_BUFFER,
@@ -676,18 +698,20 @@ impl crate::Context for Context<'_> {
         }
     }
 
-    fn upload_buffer(&self, buffer: &Self::Buffer, offset: u32, data: &[u8]) -> Result<(), Error> {
+    fn upload_buffer(&self, buffer: &Self::Buffer, offset: u64, data: &[u8]) -> Result<(), Error> {
         unsafe {
-            if offset.saturating_add(data.len() as u32) > buffer.capacity
+            let offset: u32 = offset.try_into().map_err(|_| Error::InvalidBounds)?;
+            let size: u32 = data.len().try_into().map_err(|_| Error::InvalidBounds)?;
+
+            if offset.saturating_add(size) > buffer.capacity
                 || !offset.is_multiple_of(self.features.buffer_alignment(buffer.role))
             {
                 return Err(Error::InvalidBounds);
             }
 
-            self.gl
-                .bind_buffer(buffer_target(buffer.role), Some(buffer.buffer));
+            self.gl.bind_buffer(buffer_target(buffer.role), Some(buffer.buffer));
 
-            if offset == 0 && data.len() as u32 == buffer.capacity {
+            if offset == 0 && size == buffer.capacity {
                 self.gl.buffer_data_u8_slice(
                     buffer_target(buffer.role),
                     data,
@@ -726,8 +750,7 @@ impl crate::Context for Context<'_> {
 
             let (format, data_type, _) = color_format(format);
 
-            self.gl
-                .bind_texture(glow::TEXTURE_2D, Some(texture.texture));
+            self.gl.bind_texture(glow::TEXTURE_2D, Some(texture.texture));
 
             self.gl.tex_sub_image_2d(
                 glow::TEXTURE_2D,
@@ -765,8 +788,7 @@ impl crate::Context for Context<'_> {
 
             let (format, data_type, _) = color_format(format);
 
-            self.gl
-                .bind_framebuffer(glow::READ_FRAMEBUFFER, target.framebuffer);
+            self.gl.bind_framebuffer(glow::READ_FRAMEBUFFER, target.framebuffer);
 
             self.gl.read_pixels(
                 bounds.x as i32,
@@ -804,9 +826,7 @@ impl crate::Context for Context<'_> {
                     .get_query_parameter_u32(profiler.query, glow::QUERY_RESULT_AVAILABLE);
 
                 if available != 0 {
-                    let result = self
-                        .gl
-                        .get_query_parameter_u32(profiler.query, glow::QUERY_RESULT);
+                    let result = self.gl.get_query_parameter_u32(profiler.query, glow::QUERY_RESULT);
 
                     profiler.state.set(0);
                     return Some(Duration::from_nanos(result as u64));
@@ -819,16 +839,11 @@ impl crate::Context for Context<'_> {
 
     fn draw(&self, draw: DrawRequest<Self>) -> Result<(), Error> {
         unsafe {
-            if self.last_framebuffer.replace(Some(draw.target.framebuffer))
-                != Some(draw.target.framebuffer)
-            {
-                self.gl
-                    .bind_framebuffer(glow::FRAMEBUFFER, draw.target.framebuffer);
+            if self.last_framebuffer.replace(Some(draw.target.framebuffer)) != Some(draw.target.framebuffer) {
+                self.gl.bind_framebuffer(glow::FRAMEBUFFER, draw.target.framebuffer);
             }
 
-            if self.last_pipeline.replace(Some(draw.pipeline.program))
-                != Some(draw.pipeline.program)
-            {
+            if self.last_pipeline.replace(Some(draw.pipeline.program)) != Some(draw.pipeline.program) {
                 util::apply_pipeline(self.gl, draw.pipeline);
             }
 
@@ -862,11 +877,7 @@ impl crate::Context for Context<'_> {
 
                     ProgramBinding::Buffer { index, size, role } => {
                         let (buffer, offset, data_size) = match draw.bindings.get(i) {
-                            Some(BindingData::Buffer {
-                                buffer,
-                                offset,
-                                size,
-                            }) => (buffer, offset, size),
+                            Some(BindingData::Buffer { buffer, offset, size }) => (buffer, offset, size),
                             _ => return Err(Error::InvalidBinding(i)),
                         };
 
@@ -874,8 +885,7 @@ impl crate::Context for Context<'_> {
                             return Err(Error::InvalidBinding(i));
                         }
 
-                        self.gl
-                            .bind_buffer(buffer_target(*role), Some(buffer.buffer));
+                        self.gl.bind_buffer(buffer_target(*role), Some(buffer.buffer));
                         self.gl.bind_buffer_range(
                             buffer_target(buffer.role),
                             *index,
@@ -888,12 +898,10 @@ impl crate::Context for Context<'_> {
                     ProgramBinding::Texture2D { index } => {
                         let texture = match draw.bindings.get(i) {
                             Some(BindingData::Texture { texture }) => texture.texture,
-                            Some(BindingData::FramebufferColor { framebuffer }) => {
-                                match framebuffer.color_texture {
-                                    Some(texture) => texture,
-                                    None => return Err(Error::InvalidBinding(i)),
-                                }
-                            }
+                            Some(BindingData::FramebufferColor { framebuffer }) => match framebuffer.color_texture {
+                                Some(texture) => texture,
+                                None => return Err(Error::InvalidBinding(i)),
+                            },
                             _ => {
                                 return Err(Error::InvalidBinding(i));
                             }
@@ -905,8 +913,7 @@ impl crate::Context for Context<'_> {
                 }
             }
 
-            self.gl
-                .draw_arrays(glow::TRIANGLES, 0, draw.triangles as i32 * 3);
+            self.gl.draw_arrays(glow::TRIANGLES, 0, draw.triangles as i32 * 3);
 
             Ok(())
         }

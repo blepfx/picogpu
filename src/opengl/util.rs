@@ -1,6 +1,5 @@
 use crate::{
-    BlendFactor, BlendMode, BlendOp, BufferRole, CompareFn, DepthStencilFormat, Error, StencilOp,
-    TextureFormat,
+    BlendFactor, BlendMode, BlendOp, BufferRole, CompareFn, DepthStencilFormat, Error, StencilOp, TextureFormat,
 };
 use alloc::vec::Vec;
 use core::{
@@ -31,14 +30,8 @@ pub struct Features {
 #[derive(Debug, Clone, Copy)]
 pub enum ProgramBinding {
     Unbound,
-    Buffer {
-        index: u32,
-        size: u32,
-        role: BufferRole,
-    },
-    Texture2D {
-        index: u32,
-    },
+    Buffer { index: u32, size: u32, role: BufferRole },
+    Texture2D { index: u32 },
 }
 
 pub unsafe fn is_context_valid(loader: &mut dyn FnMut(&CStr) -> *const c_void) -> bool {
@@ -48,8 +41,7 @@ pub unsafe fn is_context_valid(loader: &mut dyn FnMut(&CStr) -> *const c_void) -
             return false;
         }
 
-        let gl_get_string: extern "system" fn(u32) -> *const i8 =
-            core::mem::transmute(gl_get_string.addr());
+        let gl_get_string: extern "system" fn(u32) -> *const i8 = core::mem::transmute(gl_get_string.addr());
         let version_string = gl_get_string(glow::VERSION);
         if version_string.addr() < 8 || version_string.addr() == usize::MAX {
             return false;
@@ -70,11 +62,10 @@ impl Features {
                 || extensions.contains("GL_ARB_uniform_buffer_object");
             let storage_buffers = !version.is_embedded && (version.major, version.minor) >= (4, 3)
                 || extensions.contains("GL_ARB_shader_storage_buffer_object");
-            let query_time_elapsed = !version.is_embedded
-                && (version.major, version.minor) >= (3, 3)
+            let query_time_elapsed = !version.is_embedded && (version.major, version.minor) >= (3, 3)
                 || extensions.contains("GL_ARB_timer_query");
-            let framebuffer_msaa = (version.major, version.minor) >= (3, 0)
-                || extensions.contains("GL_EXT_framebuffer_multisample");
+            let framebuffer_msaa =
+                (version.major, version.minor) >= (3, 0) || extensions.contains("GL_EXT_framebuffer_multisample");
 
             let max_texture_size = gl.get_parameter_i32(glow::MAX_TEXTURE_SIZE) as u32;
             let max_renderbuffer_size = gl.get_parameter_i32(glow::MAX_RENDERBUFFER_SIZE) as u32;
@@ -84,8 +75,7 @@ impl Features {
                 storage_buffers,
                 query_time_elapsed,
 
-                invalidate_buffer_sub_data: !version.is_embedded
-                    && (version.major, version.minor) >= (4, 3)
+                invalidate_buffer_sub_data: !version.is_embedded && (version.major, version.minor) >= (4, 3)
                     || extensions.contains("GL_ARB_invalidate_subdata"),
 
                 max_texture_size,
@@ -123,13 +113,17 @@ impl Features {
                 },
 
                 max_storage_buffer_bindings: if storage_buffers {
-                    gl.get_parameter_i32(glow::MAX_SHADER_STORAGE_BUFFER_BINDINGS) as u32
+                    let vertex = gl.get_parameter_i32(glow::MAX_VERTEX_SHADER_STORAGE_BLOCKS) as u32;
+                    let fragment = gl.get_parameter_i32(glow::MAX_FRAGMENT_SHADER_STORAGE_BLOCKS) as u32;
+                    vertex.min(fragment)
                 } else {
                     0
                 },
 
                 max_uniform_buffer_bindings: if uniform_buffers {
-                    gl.get_parameter_i32(glow::MAX_UNIFORM_BUFFER_BINDINGS) as u32
+                    let vertex = gl.get_parameter_i32(glow::MAX_VERTEX_UNIFORM_BLOCKS) as u32;
+                    let fragment = gl.get_parameter_i32(glow::MAX_FRAGMENT_UNIFORM_BLOCKS) as u32;
+                    vertex.min(fragment)
                 } else {
                     0
                 },
@@ -182,11 +176,8 @@ pub unsafe fn prepare_pipeline_bindings(
 
                 uniform_index += 1;
 
-                let size = gl.get_active_uniform_block_parameter_i32(
-                    program,
-                    index,
-                    glow::UNIFORM_BLOCK_DATA_SIZE,
-                ) as u32;
+                let size =
+                    gl.get_active_uniform_block_parameter_i32(program, index, glow::UNIFORM_BLOCK_DATA_SIZE) as u32;
 
                 return Ok(ProgramBinding::Buffer {
                     index,
@@ -204,12 +195,8 @@ pub unsafe fn prepare_pipeline_bindings(
 
                 storage_index += 1;
 
-                let data = gl.get_program_resource_i32(
-                    program,
-                    glow::SHADER_STORAGE_BLOCK,
-                    index,
-                    &[glow::BUFFER_DATA_SIZE],
-                );
+                let data =
+                    gl.get_program_resource_i32(program, glow::SHADER_STORAGE_BLOCK, index, &[glow::BUFFER_DATA_SIZE]);
 
                 return Ok(ProgramBinding::Buffer {
                     index,
@@ -233,7 +220,7 @@ pub unsafe fn prepare_pipeline_bindings(
                     return Err(Error::UnsupportedBinding(i));
                 }
 
-                gl.uniform_1_u32(Some(&location), index);
+                gl.uniform_1_i32(Some(&location), index as i32);
                 return Ok(ProgramBinding::Texture2D { index });
             }
 
@@ -382,8 +369,8 @@ pub fn color_format(format: TextureFormat) -> (u32, u32, u32) {
         TextureFormat::R8 => (glow::RED, glow::UNSIGNED_BYTE, glow::R8),
         TextureFormat::RGB8 => (glow::RGB, glow::UNSIGNED_BYTE, glow::RGB8),
         TextureFormat::RGBA8 => (glow::RGBA, glow::UNSIGNED_BYTE, glow::RGBA8),
-        TextureFormat::R8Snorm => (glow::RED, glow::BYTE, glow::R8_SNORM),
-        TextureFormat::R16Snorm => (glow::RED, glow::SHORT, glow::R16_SNORM),
+        TextureFormat::R8S => (glow::RED, glow::BYTE, glow::R8_SNORM),
+        TextureFormat::R16S => (glow::RED, glow::SHORT, glow::R16_SNORM),
         TextureFormat::R32F => (glow::RED, glow::FLOAT, glow::R32F),
     }
 }
