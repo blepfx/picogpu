@@ -108,6 +108,7 @@ fn main() {
                         bindings: &["Uniforms", "Texture"],
                     }
                     .into(),
+                    topology: PrimitiveTopology::TriangleList,
                     color_format: TextureFormat::RGBA8,
                     color_blend: BlendMode::ALPHA,
                     depth_test: CompareFn::Always,
@@ -121,8 +122,15 @@ fn main() {
         };
 
         let mut frames = 0;
+        let mut width = 200;
+        let mut height = 200;
 
         Box::new(move |event| match event {
+            picoview::Event::WindowResize { size } => {
+                width = size.width;
+                height = size.height;
+            }
+
             picoview::Event::WindowFrame => {
                 frames += 1;
 
@@ -132,6 +140,16 @@ fn main() {
                 };
 
                 context.begin_profiler(&profiler_1);
+
+                context
+                    .clear(ClearRequest {
+                        target: context.screen(),
+                        color: Some([0.1, 0.1, 0.1, 1.0]),
+                        depth: Some(1.0),
+                        stencil: None,
+                        scissor: None,
+                    })
+                    .unwrap();
 
                 for i in 0..100 {
                     {
@@ -153,24 +171,11 @@ fn main() {
                             target: context.screen(),
                             pipeline: &pipeline,
 
-                            color_op: MemoryOp {
-                                load: LoadOp::Clear([0.0, 0.0, 0.0, 1.0]),
-                                store: StoreOp::Store,
-                            },
-                            depth_op: MemoryOp {
-                                load: LoadOp::Clear(1.0),
-                                store: StoreOp::Store,
-                            },
-                            stencil_op: MemoryOp {
-                                load: LoadOp::Clear(0),
-                                store: StoreOp::Store,
-                            },
-
                             viewport: TextureBounds {
                                 x: 0,
                                 y: 0,
-                                width: 200,
-                                height: 200,
+                                width,
+                                height,
                             },
 
                             scissor: None,
@@ -199,6 +204,7 @@ fn main() {
             _ => {}
         })
     })
+    .with_resizable((0, 0), (1000, 1000))
     .with_opengl(picoview::GlConfig {
         version: picoview::GlVersion::Compat(1, 1),
         msaa_count: 4,

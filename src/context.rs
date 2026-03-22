@@ -170,6 +170,15 @@ pub trait Context {
     /// profiler will do nothing until a result is available
     fn end_profiler(&self, profiler: &Self::Profiler) -> Option<Duration>;
 
+    /// Clears a framebuffer with the given clear parameters, which can specify clearing the color,
+    /// depth, and stencil buffers in a specified region (or the whole framebuffer if the scissor is
+    /// None).
+    ///
+    /// # Errors
+    /// - [Error::InvalidResource] if the framebuffer does not belong to this context.
+    /// - [Error::Internal] if an internal error occurs while issuing the clear command.
+    fn clear(&self, clear: ClearRequest<Self>) -> Result<(), Error>;
+
     /// Issue a draw call with the given target, pipeline, bindings, and other draw parameters.
     ///
     /// # Errors
@@ -477,7 +486,7 @@ mod shader {
     #[non_exhaustive]
     pub enum Shader<'a> {
         Glsl(ShaderGlsl<'a>),
-        SpirV(&'a [u8]),
+        SpirV(ShaderSpirV<'a>),
     }
 
     #[derive(Debug, Clone, Copy)]
@@ -492,6 +501,14 @@ mod shader {
         pub bindings: &'a [&'a str],
     }
 
+    #[derive(Debug, Clone, Copy)]
+    pub struct ShaderSpirV<'a> {
+        pub vertex_module: &'a [u32],
+        pub vertex_entry: &'a str,
+        pub fragment_module: &'a [u32],
+        pub fragment_entry: &'a str,
+    }
+
     impl Shader<'_> {
         pub fn format(&self) -> ShaderFormat {
             match self {
@@ -504,6 +521,12 @@ mod shader {
     impl<'a> From<ShaderGlsl<'a>> for Shader<'a> {
         fn from(value: ShaderGlsl<'a>) -> Self {
             Self::Glsl(value)
+        }
+    }
+
+    impl<'a> From<ShaderSpirV<'a>> for Shader<'a> {
+        fn from(value: ShaderSpirV<'a>) -> Self {
+            Self::SpirV(value)
         }
     }
 }
@@ -536,6 +559,9 @@ mod pipeline {
         pub cull_ccw: bool,
         /// Whether to discard fragments from clockwise wound triangles relative to the screen
         pub cull_cw: bool,
+        /// The primitive topology used for drawing, which determines how the vertex ordering is
+        /// interpreted as primitives.
+        pub topology: PrimitiveTopology,
     }
 
     /// A comparison function used for depth and stencil tests
@@ -623,6 +649,15 @@ mod pipeline {
         pub alpha_op: BlendOp,
     }
 
+    /// The primitive topology used for drawing, which determines how the vertex data is interpreted
+    /// as triangles.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum PrimitiveTopology {
+        TriangleList,
+        TriangleStrip,
+        TriangleFan,
+    }
+
     impl BlendMode {
         /// Opaque blending mode (overwrite)
         pub const OPAQUE: Self = Self {
@@ -675,13 +710,17 @@ mod pipeline {
 mod draw {
     use crate::{Context, TextureBounds};
 
+    pub struct ClearRequest<'a, C: Context + ?Sized> {
+        pub target: &'a C::Framebuffer,
+        pub color: Option<[f32; 4]>,
+        pub depth: Option<f32>,
+        pub stencil: Option<u8>,
+        pub scissor: Option<TextureBounds>,
+    }
+
     #[derive(Debug)]
     pub struct DrawRequest<'a, C: Context + ?Sized> {
         pub target: &'a C::Framebuffer,
-
-        pub color_op: MemoryOp<[f32; 4]>,
-        pub depth_op: MemoryOp<f32>,
-        pub stencil_op: MemoryOp<u8>,
 
         pub pipeline: &'a C::Pipeline,
         pub bindings: &'a [BindingData<'a, C>],
@@ -690,25 +729,6 @@ mod draw {
         pub scissor: Option<TextureBounds>,
 
         pub triangles: u32,
-    }
-
-    #[derive(Debug, Clone, Copy)]
-    pub struct MemoryOp<T> {
-        pub load: LoadOp<T>,
-        pub store: StoreOp,
-    }
-
-    #[derive(Debug, Clone, Copy)]
-    pub enum LoadOp<T> {
-        Clear(T),
-        Discard,
-        Load,
-    }
-
-    #[derive(Debug, Clone, Copy)]
-    pub enum StoreOp {
-        Store,
-        Discard,
     }
 
     #[derive(Debug, Clone, Copy)]

@@ -2,19 +2,19 @@
 
 mod util;
 
-use crate::{
-    BufferLayout, BufferRole, Capabilities, DrawRequest, Error, FramebufferLayout, PipelineLayout, ShaderFormat,
-    TextureBounds, TextureFormat, TextureLayout,
-    vulkan::util::{find_memorytype_index, texture_filter, texture_format, texture_wrap},
-};
+use crate::*;
+use alloc::ffi::CString;
 use ash::vk;
+use util::*;
 
 pub struct Backend {
+    instance: ash::Instance,
     device: ash::Device,
+    queue: vk::Queue,
+
     device_memory_properties: vk::PhysicalDeviceMemoryProperties,
     device_limits: vk::PhysicalDeviceLimits,
 
-    queue: vk::Queue,
     command_pool: vk::CommandPool,
     query_pool: vk::QueryPool,
 }
@@ -59,24 +59,13 @@ impl From<vk::Result> for VulkanError {
 }
 
 impl Backend {
-    pub fn from_device(device: ash::Device, queue: vk::Queue) -> Result<Self, VulkanError> {
-        unsafe {
-            let command_pool = device.create_command_pool(&vk::CommandPoolCreateInfo::default(), None)?;
-
-            // Initialize Vulkan resources such as command pools, queues, etc. here
-            Ok(Self {
-                device,
-                queue,
-                command_pool,
-                ..todo!()
-            })
-        }
-    }
-
     pub fn new() -> Result<Self, VulkanError> {
         unsafe {
             let entry = ash::Entry::load()?;
-            let instance = entry.create_instance(&vk::InstanceCreateInfo::default(), None)?;
+            let instance = entry.create_instance(
+                &vk::InstanceCreateInfo::default().enabled_layer_names(&[c"VK_LAYER_KHRONOS_validation".as_ptr()]),
+                None,
+            )?;
 
             todo!()
         }
@@ -186,7 +175,127 @@ impl crate::Context for Context<'_> {
     }
 
     fn create_pipeline(&self, layout: PipelineLayout) -> Result<Self::Pipeline, Error> {
-        todo!()
+        unsafe {
+            let shader = match layout.shader {
+                Shader::SpirV(shader) => shader,
+                _ => return Err(Error::UnsupportedFormat),
+            };
+
+            let vertex_module = self
+                .backend
+                .device
+                .create_shader_module(&vk::ShaderModuleCreateInfo::default().code(shader.vertex_module), None)
+                .unwrap();
+
+            let fragment_module = self
+                .backend
+                .device
+                .create_shader_module(
+                    &vk::ShaderModuleCreateInfo::default().code(shader.fragment_module),
+                    None,
+                )
+                .unwrap();
+
+            let vertex_entry = CString::new(shader.vertex_entry).unwrap();
+            let vertex_stage = vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::VERTEX)
+                .module(vertex_module)
+                .name(vertex_entry.as_c_str());
+
+            let fragment_entry = CString::new(shader.fragment_entry).unwrap();
+            let fragment_stage = vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::FRAGMENT)
+                .module(fragment_module)
+                .name(fragment_entry.as_c_str());
+
+            let dynamic_state = vk::PipelineDynamicStateCreateInfo::default()
+                .dynamic_states(&[vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR]);
+
+            let vertex_input = vk::PipelineVertexInputStateCreateInfo::default()
+                .vertex_binding_descriptions(&[])
+                .vertex_attribute_descriptions(&[]);
+
+            let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
+                .topology(match layout.topology {
+                    PrimitiveTopology::TriangleList => vk::PrimitiveTopology::TRIANGLE_LIST,
+                    PrimitiveTopology::TriangleStrip => vk::PrimitiveTopology::TRIANGLE_STRIP,
+                    PrimitiveTopology::TriangleFan => vk::PrimitiveTopology::TRIANGLE_FAN,
+                })
+                .primitive_restart_enable(false);
+
+            let viewport_state = vk::PipelineViewportStateCreateInfo::default()
+                .viewport_count(1)
+                .scissor_count(1);
+
+            let rasterization_state = vk::PipelineRasterizationStateCreateInfo::default()
+                .depth_clamp_enable(false)
+                .rasterizer_discard_enable(false)
+                .polygon_mode(vk::PolygonMode::FILL)
+                .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
+                .cull_mode(match (layout.cull_ccw, layout.cull_cw) {
+                    (false, false) => vk::CullModeFlags::NONE,
+                    (true, false) => vk::CullModeFlags::BACK,
+                    (false, true) => vk::CullModeFlags::FRONT,
+                    (true, true) => vk::CullModeFlags::FRONT_AND_BACK,
+                });
+
+            let multisample_state =
+                vk::PipelineMultisampleStateCreateInfo::default().rasterization_samples(vk::SampleCountFlags::TYPE_1);
+
+            let depth_stencil_state = vk::PipelineDepthStencilStateCreateInfo::default()
+                .depth_test_enable(layout.depth_test != CompareFn::Always)
+                .depth_write_enable(layout.depth_write)
+                .depth_compare_op(compare_op(layout.depth_test))
+                .stencil_test_enable(
+                    layout.stencil_ccw != StencilFace::default() || layout.stencil_cw != StencilFace::default(),
+                )
+                .front(vk::StencilOpState {
+                    fail_op: stencil_op(layout.stencil_ccw.fail_op),
+                    pass_op: stencil_op(layout.stencil_ccw.pass_op),
+                    depth_fail_op: stencil_op(layout.stencil_ccw.depth_fail_op),
+                    compare_op: compare_op(layout.stencil_ccw.compare),
+                    compare_mask: layout.stencil_ccw.mask as u32,
+                    write_mask: layout.stencil_ccw.mask as u32,
+                    reference: layout.stencil_ccw.reference as u32,
+                })
+                .back(vk::StencilOpState {
+                    fail_op: stencil_op(layout.stencil_cw.fail_op),
+                    pass_op: stencil_op(layout.stencil_cw.pass_op),
+                    depth_fail_op: stencil_op(layout.stencil_cw.depth_fail_op),
+                    compare_op: compare_op(layout.stencil_cw.compare),
+                    compare_mask: layout.stencil_cw.mask as u32,
+                    write_mask: layout.stencil_cw.mask as u32,
+                    reference: layout.stencil_cw.reference as u32,
+                });
+
+            let color_blend_attachments = [vk::PipelineColorBlendAttachmentState {
+                blend_enable: (layout.color_blend != BlendMode::OPAQUE) as vk::Bool32,
+                src_color_blend_factor: blend_factor(layout.color_blend.color_src),
+                dst_color_blend_factor: blend_factor(layout.color_blend.color_dst),
+                src_alpha_blend_factor: blend_factor(layout.color_blend.alpha_src),
+                dst_alpha_blend_factor: blend_factor(layout.color_blend.alpha_dst),
+                color_blend_op: blend_op(layout.color_blend.color_op),
+                alpha_blend_op: blend_op(layout.color_blend.alpha_op),
+                color_write_mask: vk::ColorComponentFlags::RGBA,
+            }];
+
+            let color_blend_state = vk::PipelineColorBlendStateCreateInfo::default()
+                .logic_op_enable(false)
+                .attachments(&color_blend_attachments);
+
+            let pipeline_info = vk::GraphicsPipelineCreateInfo::default()
+                .stages(&[vertex_stage, fragment_stage])
+                .vertex_input_state(&vertex_input)
+                .input_assembly_state(&input_assembly)
+                .viewport_state(&viewport_state)
+                .rasterization_state(&rasterization_state)
+                .multisample_state(&multisample_state)
+                .depth_stencil_state(&depth_stencil_state)
+                .color_blend_state(&color_blend_state)
+                .dynamic_state(&dynamic_state);
+
+            todo!()
+        }
     }
 
     fn create_framebuffer(&self, layout: FramebufferLayout) -> Result<Self::Framebuffer, Error> {
@@ -298,6 +407,10 @@ impl crate::Context for Context<'_> {
         todo!()
     }
 
+    fn clear(&self, clear: ClearRequest<Self>) -> Result<(), Error> {
+        todo!()
+    }
+
     fn draw(&self, draw: DrawRequest<Self>) -> Result<(), Error> {
         todo!()
     }
@@ -309,6 +422,7 @@ impl Drop for Backend {
             self.device.device_wait_idle().ok();
             self.device.destroy_command_pool(self.command_pool, None);
             self.device.destroy_device(None);
+            self.instance.destroy_instance(None);
         }
     }
 }

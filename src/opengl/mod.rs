@@ -41,6 +41,7 @@ pub struct Pipeline {
     vertex_array: glow::VertexArray,
     bindings: Vec<ProgramBinding>,
 
+    topology: PrimitiveTopology,
     color_blend: BlendMode,
     depth_test: CompareFn,
     depth_write: bool,
@@ -372,6 +373,7 @@ impl crate::Context for Context<'_> {
                 bindings,
                 program: program.take(),
                 vertex_array: vertex_array.take(),
+                topology: layout.topology,
                 color_blend: layout.color_blend,
                 depth_test: layout.depth_test,
                 depth_write: layout.depth_write,
@@ -837,6 +839,59 @@ impl crate::Context for Context<'_> {
         None
     }
 
+    fn clear(&self, clear: ClearRequest<Self>) -> Result<(), Error> {
+        unsafe {
+            if self.last_framebuffer.replace(Some(clear.target.framebuffer)) != Some(clear.target.framebuffer) {
+                self.gl.bind_framebuffer(glow::FRAMEBUFFER, clear.target.framebuffer);
+            }
+
+            if let Some(color) = clear.color {
+                self.gl.clear_color(color[0], color[1], color[2], color[3]);
+            }
+
+            if let Some(depth) = clear.depth {
+                self.gl.clear_depth_f32(depth);
+            }
+
+            if let Some(stencil) = clear.stencil {
+                self.gl.clear_stencil(stencil as i32);
+            }
+
+            if self.last_scissor.replace(Some(clear.scissor)) != Some(clear.scissor) {
+                match clear.scissor {
+                    None => self.gl.disable(glow::SCISSOR_TEST),
+                    Some(scissor) => {
+                        self.gl.enable(glow::SCISSOR_TEST);
+                        self.gl.scissor(
+                            scissor.x as i32,
+                            scissor.y as i32,
+                            scissor.width as i32,
+                            scissor.height as i32,
+                        );
+                    }
+                }
+            }
+
+            let mut mask = 0;
+
+            if clear.color.is_some() {
+                mask |= glow::COLOR_BUFFER_BIT;
+            }
+
+            if clear.depth.is_some() {
+                mask |= glow::DEPTH_BUFFER_BIT;
+            }
+
+            if clear.stencil.is_some() {
+                mask |= glow::STENCIL_BUFFER_BIT;
+            }
+
+            self.gl.clear(mask);
+
+            Ok(())
+        }
+    }
+
     fn draw(&self, draw: DrawRequest<Self>) -> Result<(), Error> {
         unsafe {
             if self.last_framebuffer.replace(Some(draw.target.framebuffer)) != Some(draw.target.framebuffer) {
@@ -913,7 +968,15 @@ impl crate::Context for Context<'_> {
                 }
             }
 
-            self.gl.draw_arrays(glow::TRIANGLES, 0, draw.triangles as i32 * 3);
+            self.gl.draw_arrays(
+                match draw.pipeline.topology {
+                    PrimitiveTopology::TriangleList => glow::TRIANGLES,
+                    PrimitiveTopology::TriangleStrip => glow::TRIANGLE_STRIP,
+                    PrimitiveTopology::TriangleFan => glow::TRIANGLE_FAN,
+                },
+                0,
+                draw.triangles as i32 * 3,
+            );
 
             Ok(())
         }
