@@ -30,40 +30,56 @@ pub trait Context {
     /// Creates a new buffer with the given layout, and returns a handle to it.
     ///
     /// # Errors
-    /// - [Error::UnsupportedSize] if the requested buffer size is larger than what is supported.
-    /// - [Error::Internal] if an internal error occurs while creating the buffer.
+    /// - [`Error::UnsupportedSize`] if the requested buffer size is larger than what is supported.
+    ///   Note that the alignment requirement does not apply here (a backend could allocate more
+    ///   memory than requested if needed).
+    /// - [`Error::Internal] if an internal error occurs while creating the buffer.
     fn create_buffer(&self, layout: BufferLayout) -> Result<Self::Buffer, Error>;
+
     /// Creates a new texture with the given layout, and returns a handle to it.
     ///
+    /// Please note that the backend can "promote" the pixel format if needed (for example, if RGB8
+    /// is not supported, it can be promoted to RGBA8), so the returned texture may be of a larger
+    /// size than requested.
+    ///
     /// # Errors
-    /// - [Error::UnsupportedSize] if the requested texture dimensions are larger than what is
+    /// - [`Error::UnsupportedSize`] if the requested texture dimensions are larger than what is
     ///   supported.
-    /// - [Error::UnsupportedFormat] if the requested texture format is not supported.
-    /// - [Error::Internal] if an internal error occurs while creating the texture.
+    /// - [`Error::UnsupportedFormat`] if the requested texture format is not supported.
+    /// - [`Error::Internal`] if an internal error occurs while creating the texture.
     fn create_texture(&self, layout: TextureLayout) -> Result<Self::Texture, Error>;
+
     /// Creates a new pipeline with the given layout, and returns a handle to it.
     ///
     /// # Errors
-    /// - [Error::UnsupportedFormat] if the shader format used in the pipeline is not supported.
-    /// - [Error::UnsupportedBinding] if the pipeline layout requires more bindings than what is
+    /// - [`Error::UnsupportedFormat`] if the shader format used in the pipeline is not supported.
+    /// - [`Error::UnsupportedBinding`] if the pipeline layout requires more bindings than what is
     ///   supported.
-    /// - [Error::Compile] if an error occurs while compiling the shader for the pipeline.
-    /// - [Error::Internal] if an internal error occurs while creating the pipeline.
+    /// - [`Error::Compile`] if an error occurs while compiling the shader for the pipeline.
+    /// - [`Error::Internal`] if an internal error occurs while creating the pipeline.
     fn create_pipeline(&self, layout: PipelineLayout) -> Result<Self::Pipeline, Error>;
+
     /// Creates a new framebuffer with the given layout, and returns a handle to it.
     ///
+    /// Please note that the backend can "promote" the framebuffer layout if needed (for example, if
+    /// RGB8 color format is not supported, it can be promoted to RGBA8), so the returned
+    /// framebuffer may have a different layout than requested. The returned framebuffer will
+    /// always have at least the features specified in the requested layout, but may have additional
+    /// features (e.g. more attachments, or larger size).
+    ///
     /// # Errors
-    /// - [Error::UnsupportedSize] if the requested framebuffer dimensions are larger than what is
+    /// - [`Error::UnsupportedSize`] if the requested framebuffer dimensions are larger than what is
     ///   supported.
-    /// - [Error::UnsupportedFormat] if the requested color/depth/stencil format is not supported.
-    /// - [Error::UnsupportedSampleCount] if the requested MSAA sample count is not supported.
-    /// - [Error::Internal] if an internal error occurs while creating the framebuffer.
+    /// - [`Error::UnsupportedFormat`] if the requested color/depth/stencil format is not supported.
+    /// - [`Error::UnsupportedSampleCount`] if the requested MSAA sample count is not supported.
+    /// - [`Error::Internal`] if an internal error occurs while creating the framebuffer.
     fn create_framebuffer(&self, layout: FramebufferLayout) -> Result<Self::Framebuffer, Error>;
+
     /// Creates a new profiler, and returns a handle to it.
     ///
     /// # Errors
-    /// - [Error::UnsupportedFeature] if the GPU does not support profiling.
-    /// - [Error::Internal] if an internal error occurs while creating the profiler.
+    /// - [`Error::UnsupportedFeature`] if the GPU does not support profiling.
+    /// - [`Error::Internal`] if an internal error occurs while creating the profiler.
     fn create_profiler(&self) -> Result<Self::Profiler, Error>;
 
     /// Deletes a buffer, freeing its memory on the GPU.
@@ -85,11 +101,11 @@ pub trait Context {
     /// The data must match the layout specified by the (width, height, format) triple.
     ///
     /// # Errors
-    /// - [Error::InvalidResource] if the texture does not belong to this context.
-    /// - [Error::InvalidBounds] if the bounds exceed the texture dimensions.
-    /// - [Error::InvalidData] if the data size does not match the expected size for the given
+    /// - [`Error::InvalidResource`] if the texture does not belong to this context.
+    /// - [`Error::InvalidBounds`] if the bounds exceed the texture dimensions.
+    /// - [`Error::InvalidData`] if the data size does not match the expected size for the given
     ///   bounds and format.
-    /// - [Error::Internal] if an internal error occurs while uploading the data.
+    /// - [`Error::Internal`] if an internal error occurs while uploading the data.
     fn upload_texture(
         &self,
         texture: &Self::Texture,
@@ -101,10 +117,10 @@ pub trait Context {
     /// Uploads data to a buffer, replacing the contents of the buffer at the given offset.
     ///
     /// # Errors
-    /// - [Error::InvalidResource] if the buffer does not belong to this context.
-    /// - [Error::InvalidBounds] if the offset and data size exceed the buffer capacity, or if the
+    /// - [`Error::InvalidResource`] if the buffer does not belong to this context.
+    /// - [`Error::InvalidBounds`] if the offset and data size exceed the buffer capacity, or if the
     ///   offset does not match alignment requirements for the buffer layout.
-    /// - [Error::Internal] if an internal error occurs while uploading the data.
+    /// - [`Error::Internal`] if an internal error occurs while uploading the data.
     fn upload_buffer(&self, buffer: &Self::Buffer, offset: u64, data: &[u8]) -> Result<(), Error>;
 
     /// Copies data from one buffer to another, replacing the contents of the destination buffer at
@@ -112,12 +128,12 @@ pub trait Context {
     /// destination buffers are the same.
     ///
     /// # Errors
-    /// - [Error::InvalidResource] if either buffer does not belong to this context.
-    /// - [Error::InvalidBounds] if the source or destination offset and size exceed the respective
-    ///   buffer sizes, if the source and destination regions overlap when the source and
+    /// - [`Error::InvalidResource`] if either buffer does not belong to this context.
+    /// - [`Error::InvalidBounds`] if the source or destination offset and size exceed the
+    ///   respective buffer sizes, if the source and destination regions overlap when the source and
     ///   destination buffers are the same, or if the offset does not match alignment requirements
     ///   for the buffer layout.
-    /// - [Error::Internal] if an internal error occurs while copying the data.
+    /// - [`Error::Internal`] if an internal error occurs while copying the data.
     fn copy_buffer(
         &self,
         dst_buffer: &Self::Buffer,
@@ -132,10 +148,10 @@ pub trait Context {
     /// avoiding unnecessary synchronization for future drawcalls.
     ///
     /// # Errors
-    /// - [Error::InvalidResource] if the buffer does not belong to this context.
-    /// - [Error::InvalidBounds] if the offset and size exceed the buffer capacity, or if the offset
-    ///   does not match alignment requirements for the buffer layout.
-    /// - [Error::Internal] if an internal error occurs while invalidating the buffer.
+    /// - [`Error::InvalidResource`] if the buffer does not belong to this context.
+    /// - [`Error::InvalidBounds`] if the offset and size exceed the buffer capacity, or if the
+    ///   offset does not match alignment requirements for the buffer layout.
+    /// - [`Error::Internal`] if an internal error occurs while invalidating the buffer.
     fn invalidate_buffer(&self, buffer: &Self::Buffer, offset: u64, size: u64) -> Result<(), Error>;
 
     /// Reads data from a framebuffer, copying the contents of the specified bounds into the
@@ -143,11 +159,11 @@ pub trait Context {
     /// Common usecases include readback for screenshots and draw tests.
     ///
     /// # Errors
-    /// - [Error::InvalidResource] if the framebuffer does not belong to this context.
-    /// - [Error::InvalidBounds] if the bounds exceed the framebuffer dimensions.
-    /// - [Error::InvalidData] if the data buffer size does not match the expected size for the
+    /// - [`Error::InvalidResource`] if the framebuffer does not belong to this context.
+    /// - [`Error::InvalidBounds`] if the bounds exceed the framebuffer dimensions.
+    /// - [`Error::InvalidData`] if the data buffer size does not match the expected size for the
     ///   given bounds and format.
-    /// - [Error::Internal] if an internal error occurs while reading the data.
+    /// - [`Error::Internal`] if an internal error occurs while reading the data.
     fn read_framebuffer(
         &self,
         target: &Self::Framebuffer,
@@ -175,18 +191,20 @@ pub trait Context {
     /// None).
     ///
     /// # Errors
-    /// - [Error::InvalidResource] if the framebuffer does not belong to this context.
-    /// - [Error::Internal] if an internal error occurs while issuing the clear command.
+    /// - [`Error::InvalidResource`] if the framebuffer does not belong to this context.
+    /// - [`Error::Internal`] if an internal error occurs while issuing the clear command.
     fn clear(&self, clear: ClearRequest<Self>) -> Result<(), Error>;
 
     /// Issue a draw call with the given target, pipeline, bindings, and other draw parameters.
     ///
     /// # Errors
-    /// - [Error::InvalidResource] if the framebuffer, pipeline, or any resources used in the
+    /// - [`Error::InvalidResource`] if the framebuffer, pipeline, or any resources used in the
     ///   bindings do not belong to this context.
-    /// - [Error::InvalidBinding] if the provided bindings do not match the bindings declared when
+    /// - [`Error::InvalidBinding`] if the provided bindings do not match the bindings declared when
     ///   the pipeline was created (e.g. wrong number of bindings, or wrong types of bindings).
-    /// - [Error::Internal] if an internal error occurs while issuing the draw call.
+    /// - [`Error::InvalidFramebuffer`] if the target framebuffer is also used as a binding resource
+    ///   at the same time.
+    /// - [`Error::Internal`] if an internal error occurs while issuing the draw call.
     fn draw(&self, draw: DrawRequest<Self>) -> Result<(), Error>;
 }
 
@@ -262,6 +280,8 @@ pub enum Error {
     /// Attempt to create a context with an invalid backend state (i.e. a non-current or
     /// non-existing OpenGL context)
     InvalidContext,
+    /// Attempt to draw to a framebuffer that is also used as a binding resource at the same time.
+    InvalidFramebuffer,
 
     /// An error occurred during fragment shader compilation.
     Compile(CompileStage, String),
@@ -296,6 +316,7 @@ impl core::fmt::Display for Error {
             Error::InvalidBinding(i) => {
                 write!(f, "binding does not match the pipeline (index {})", i)
             }
+            Error::InvalidFramebuffer => write!(f, "framebuffer already in use"),
             Error::Compile(CompileStage::Fragment, msg) => {
                 write!(f, "fragment shader compilation error: {}", msg)
             }
@@ -325,6 +346,10 @@ mod buffer {
     }
 
     /// The layout of a buffer, used for creating a buffer with the desired specifications.
+    ///
+    /// ## Buffer
+    /// A buffer is a contiguous region of memory allocated on the GPU. It is used for storing
+    /// arbitrary data that can be read by a pipeline, or written to by the CPU.
     #[derive(Debug, Clone, Copy)]
     pub struct BufferLayout {
         /// The role of the buffer, which determines how it is expected to be used.
@@ -436,59 +461,96 @@ mod texture {
 mod framebuffer {
     use crate::TextureFormat;
 
+    /// The format of the depth attachment.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    #[non_exhaustive]
-    pub enum DepthStencilFormat {
-        Depth24Stencil8,
-        Depth32FStencil8,
-        Depth32F,
-        Stencil8,
+    pub enum DepthFormat {
+        /// 24-bit unsigned normalized depth.
+        D24,
+        /// 32-bit floating point depth.
+        D32F,
     }
 
+    /// The format of the stencil attachment.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum StencilFormat {
+        /// 8-bit unsigned stencil component.
+        S8,
+    }
+
+    /// The type of attachment of a framebuffer.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum FramebufferAttachment {
+        /// Color attachment
         Color,
+        /// Depth attachment
         Depth,
+        /// Stencil attachment
         Stencil,
     }
 
+    /// The layout of a framebuffer, used for creating a framebuffer with the desired
+    /// specifications.
     #[derive(Debug, Clone, Copy)]
     pub struct FramebufferLayout {
+        /// The width of the framebuffer in pixels.
         pub width: u32,
+        /// The height of the framebuffer in pixels.
         pub height: u32,
 
+        /// The format of the color attachment, if any.
         pub color: Option<TextureFormat>,
-        pub depth: Option<DepthStencilFormat>,
+        /// The format of the depth attachment, if any.
+        pub depth: Option<DepthFormat>,
+        /// The format of the stencil attachment, if any.
+        pub stencil: Option<StencilFormat>,
+
+        /// The number of samples for MSAA, 0 if MSAA is not used.
         pub msaa_samples: u32,
 
+        /// Whether the framebuffer is expected to be used as a persistent render target (i.e.
+        /// contents are preserved across frames and can be drawn to multiple times).
         pub is_persistent: bool,
+        /// Whether the color attachment is expected to be used as a texture that is sampled from.
         pub is_color_bindable: bool,
+        /// Whether the depth attachment is expected to be used as a texture that is sampled from.
         pub is_depth_bindable: bool,
     }
 }
 
 mod shader {
+    /// The stage of shader compilation that an error occurred in, used for error reporting.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum CompileStage {
+        /// An error occurred while compiling the vertex shader.
         Vertex,
+        /// An error occurred while compiling the fragment shader.
         Fragment,
+        /// An error occurred while linking the shader program.
         Linking,
     }
 
+    /// The shader format used by the backend.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     #[non_exhaustive]
     pub enum ShaderFormat {
-        SpirV,
+        /// GLSL shader format.
         Glsl,
+        /// SPIR-V shader format.
+        SpirV,
     }
 
+    /// A backend-specific shader representation. `picogpu` does not use a common shader
+    /// representation and requires you to pre-compile shaders for each backend.
     #[derive(Debug, Clone, Copy)]
     #[non_exhaustive]
     pub enum Shader<'a> {
+        /// GLSL shader representation.
         Glsl(ShaderGlsl<'a>),
+        /// SPIR-V shader representation.
         SpirV(ShaderSpirV<'a>),
     }
 
+    /// The GLSL shader representation.
     #[derive(Debug, Clone, Copy)]
     pub struct ShaderGlsl<'a> {
         /// The vertex shader source code.
@@ -501,15 +563,21 @@ mod shader {
         pub bindings: &'a [&'a str],
     }
 
+    /// The SPIR-V shader representation.   
     #[derive(Debug, Clone, Copy)]
     pub struct ShaderSpirV<'a> {
+        /// The SPIR-V module bytecode for the vertex shader
         pub vertex_module: &'a [u32],
+        /// The entry point name for the vertex shader
         pub vertex_entry: &'a str,
+        /// The SPIR-V module bytecode for the fragment shader
         pub fragment_module: &'a [u32],
+        /// The entry point name for the fragment shader
         pub fragment_entry: &'a str,
     }
 
     impl Shader<'_> {
+        /// Returns the shader format of this shader.
         pub fn format(&self) -> ShaderFormat {
             match self {
                 Shader::Glsl(_) => ShaderFormat::Glsl,
@@ -535,6 +603,18 @@ mod pipeline {
     use crate::{Shader, TextureFormat};
 
     /// The layout of a pipeline, used for creating a pipeline with the desired specifications.
+    ///
+    /// ## Pipeline
+    /// A graphics pipeline represents an object that determines how draw calls are executed and
+    /// rendered. Think of a graphics pipeline as an "assembly line": vertices go in, pixels come
+    /// out.
+    ///
+    /// A pipeline determines (in order of execution):
+    /// - How the vertices are constructed and how input data is interpreted (vertex shader)
+    /// - How the vertices are interpreted into primitives and rasterized into fragments (topology)
+    /// - How the fragments are clipped and discarded (cull mode, depth test, stencil test)
+    /// - How the fragments are shaded (fragment shader)
+    /// - How the output color is determined (blending)
     #[derive(Debug, Clone)]
     pub struct PipelineLayout<'a> {
         /// The shader (vertex and fragment) used by this pipeline
@@ -542,23 +622,38 @@ mod pipeline {
 
         /// The format of the output color buffer
         pub color_format: TextureFormat,
-        /// Blend mode used for color blending (how the resulting color is calculated from the
-        /// fragment shader output and the existing color in the framebuffer)
+
+        /// Blend mode used for color blending.
+        ///
+        /// This determines how the output color from the fragment shader (source) is blended with
+        /// the existing color in the framebuffer (destination). The blend mode specifies how to
+        /// compute the final color based on the source and destination colors, using the
+        /// specified blend factors and operations for both color and alpha channels.
         pub color_blend: BlendMode,
-        /// Depth test function (discards fragments if it fails the depth test against the existing
-        /// depth in the framebuffer)
+
+        /// Depth test function.
+        ///
+        /// This is used to determine whether a fragment should be discarded based on its depth
+        /// value compared to the existing depth value in the framebuffer. If the test
+        /// fails, the fragment is discarded and does not update the color or depth buffers.
         pub depth_test: CompareFn,
-        /// Whether to write the depth output of the fragment shader to the depth buffer
+
+        /// Whether to write the depth output of the fragment shader to the depth buffer.
+        /// If this is false, the depth output will be discarded, but depth testing can still be
+        /// performed.
         pub depth_write: bool,
+
         /// Stencil test and operations for clockwise wound triangles
         pub stencil_cw: StencilFace,
         /// Stencil test and operations for counter-clockwise wound triangles
         pub stencil_ccw: StencilFace,
+
         /// Whether to discard fragments from counter-clockwise wound triangles relative to the
         /// screen
         pub cull_ccw: bool,
         /// Whether to discard fragments from clockwise wound triangles relative to the screen
         pub cull_cw: bool,
+
         /// The primitive topology used for drawing, which determines how the vertex ordering is
         /// interpreted as primitives.
         pub topology: PrimitiveTopology,
@@ -567,26 +662,42 @@ mod pipeline {
     /// A comparison function used for depth and stencil tests
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum CompareFn {
+        /// Always false
         Never,
+        /// Less than
         Less,
+        /// Equal to
         Equal,
+        /// Less than or equal to
         LessEqual,
+        /// Greater than
         Greater,
+        /// Not equal to
         NotEqual,
+        /// Greater than or equal to
         GreaterEqual,
+        /// Always true
         Always,
     }
 
     /// A stencil operation, which determines how the stencil is updated after a test.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum StencilOp {
+        /// Do nothing.
         Keep,
+        /// Set to zero.
         Zero,
+        /// Set to reference.
         Replace,
+        /// Bitwise inverse.
         Invert,
+        /// Increment (saturate)
         IncrementClamp,
+        /// Decrement (saturate)
         DecrementClamp,
+        /// Increment (wrap)
         IncrementWrap,
+        /// Decrement (wrap)
         DecrementWrap,
     }
 
@@ -594,40 +705,63 @@ mod pipeline {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     #[repr(align(8))]
     pub struct StencilFace {
+        /// A bitmask that determines which bits of the stencil buffer are used for the stencil test
         pub mask: u8,
+        /// The reference value for the stencil test, used as a comparison value and in case
+        /// [`StencilOp::Replace`] is used.
         pub reference: u8,
+        /// The comparison function used for the stencil test. The fragment is discarded if the test
+        /// fails.
         pub compare: CompareFn,
+        /// What happens when the test passes
         pub pass_op: StencilOp,
+        /// What happens when the test fails
         pub fail_op: StencilOp,
+        /// What happens when the depth test fails (if depth testing is enabled)
         pub depth_fail_op: StencilOp,
     }
 
     /// Blend mode multiplier
     ///
-    /// See [BlendMode] for how these are used in blending.
+    /// See [`BlendMode`] for how these are used in blending.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum BlendFactor {
+        /// Zero
         Zero,
+        /// One
         One,
+        /// Source color.
         SrcColor,
+        /// Inverse of source color (1 - src_color).
         OneMinusSrcColor,
+        /// Destination color.
         DstColor,
+        /// Inverse of destination color (1 - dst_color).
         OneMinusDstColor,
+        /// Source alpha.
         SrcAlpha,
+        /// Inverse of source alpha (1 - src_alpha).
         OneMinusSrcAlpha,
+        /// Destination alpha.
         DstAlpha,
+        /// Inverse of destination alpha (1 - dst_alpha).
         OneMinusDstAlpha,
     }
 
     /// Blend mode operation
     ///
-    /// See [BlendMode] for how these are used in blending.
+    /// See [`BlendMode`] for how these are used in blending.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum BlendOp {
+        /// Add source and destination.
         Add,
+        /// Subtract destination from source.
         Subtract,
+        /// Subtract source from destination.
         ReverseSubtract,
+        /// Component-wise minimum.
         Min,
+        /// Component-wise maximum.
         Max,
     }
 
@@ -640,12 +774,18 @@ mod pipeline {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     #[repr(align(8))]
     pub struct BlendMode {
+        /// Blend factor for the source color (output of the fragment shader)
         pub color_src: BlendFactor,
+        /// Blend factor for the destination color (existing color in the framebuffer)
         pub color_dst: BlendFactor,
+        /// Blend operation for the color channels.
         pub color_op: BlendOp,
 
+        /// Blend factor for the source alpha (output of the fragment shader)
         pub alpha_src: BlendFactor,
+        /// Blend factor for the destination alpha (existing alpha in the framebuffer)
         pub alpha_dst: BlendFactor,
+        /// Blend operation for the alpha channel.
         pub alpha_op: BlendOp,
     }
 
@@ -653,8 +793,12 @@ mod pipeline {
     /// as triangles.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum PrimitiveTopology {
+        /// Each group of 3 vertices forms a separate triangle.
         TriangleList,
+        /// Each vertex forms a triangle together with the previous 2 vertices, reusing vertices to
+        /// form connected strips of triangles.
         TriangleStrip,
+        /// A fan of triangles sharing a common vertex (the first vertex)
         TriangleFan,
     }
 
@@ -708,40 +852,76 @@ mod pipeline {
 }
 
 mod draw {
-    use crate::{Context, TextureBounds};
+    use crate::{Context, FramebufferAttachment, TextureBounds};
 
+    /// A request to the backend to clear a region of a framebuffer with the specified clear
+    /// parameters.
+    #[derive(Debug, Clone, Copy)]
     pub struct ClearRequest<'a, C: Context + ?Sized> {
+        /// The framebuffer to clear.
         pub target: &'a C::Framebuffer,
-        pub color: Option<[f32; 4]>,
-        pub depth: Option<f32>,
-        pub stencil: Option<u8>,
+        /// The subregion of the framebuffer to clear, or `None` to clear the whole framebuffer.
         pub scissor: Option<TextureBounds>,
+        /// Target value for the color attachment, does nothing if `None`
+        pub color: Option<[f32; 4]>,
+        /// Target value for the depth attachment, does nothing if `None`
+        pub depth: Option<f32>,
+        /// Target value for the stencil attachment, does nothing if `None`
+        pub stencil: Option<u8>,
     }
 
-    #[derive(Debug)]
+    /// A request to the backend to draw a batch of primitives.
+    #[derive(Debug, Clone, Copy)]
     pub struct DrawRequest<'a, C: Context + ?Sized> {
+        /// The framebuffer to draw onto.
         pub target: &'a C::Framebuffer,
 
+        /// The graphics pipeline to use for drawing.
         pub pipeline: &'a C::Pipeline,
+        /// The resources to bind to the pipeline for this draw call. The binding order is
+        /// determined by the specificed pipeline layout and shader data.
         pub bindings: &'a [BindingData<'a, C>],
 
+        /// The viewport to use for drawing. Determines the transformation from normalized device
+        /// coordinates to screen coordinates.
         pub viewport: TextureBounds,
+        /// The scissor rectangle to use for drawing. Limits the drawing area to a specific region.
+        /// If `None`, no scissor test is applied and drawing can affect the whole framebuffer.
         pub scissor: Option<TextureBounds>,
 
-        pub triangles: u32,
+        /// The number of vertices to dispatch.
+        pub vertices: u32,
     }
 
+    /// A resource binding for a draw call, which can be a texture, framebuffer, or a buffer region.
     #[derive(Debug, Clone, Copy)]
     pub enum BindingData<'a, C: Context + ?Sized> {
+        /// A texture/sampler binding.
         Texture {
+            /// The texture to bind.
             texture: &'a C::Texture,
         },
-        FramebufferColor {
+        /// A framebuffer binding.
+        Framebuffer {
+            /// The framebuffer to bind.
+            ///
+            /// This cannot be the same framebuffer as the draw target, otherwise this will result
+            /// in an error.
             framebuffer: &'a C::Framebuffer,
+            /// Which attachment of the framebuffer to bind.
+            ///
+            /// Please note that the framebuffer must have been created with the corresponding
+            /// attachment as bindable (e.g. `is_color_bindable` for `Color` attachment), otherwise
+            /// this will result in an error.
+            attachment: FramebufferAttachment,
         },
+        /// A buffer binding.
         Buffer {
+            /// The buffer to bind.
             buffer: &'a C::Buffer,
+            /// The start of the bound region.
             offset: u32,
+            /// The size of the bound region in bytes.
             size: u32,
         },
     }

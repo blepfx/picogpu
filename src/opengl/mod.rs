@@ -1,3 +1,11 @@
+//! An OpenGL implementation of the `picogpu` rendering backend.
+//!
+//! This implementation and provides a high-level API for
+//! creating and managing GPU resources, handling errors, and issuing draw calls.
+//!
+//! The OpenGL target is 3.0+, but some features may require higher versions or extensions, which
+//! are checked for at runtime and will return an error if not supported by the current context.
+
 mod util;
 
 use crate::*;
@@ -10,11 +18,15 @@ use core::{
 use glow::HasContext;
 use util::*;
 
+/// OpenGL implementation of the `picogpu` rendering backend.
 pub struct Backend {
     gl: glow::Context,
     features: Features,
 }
 
+/// A rendering context for the OpenGL backend.
+/// It is used as a temporary context for rendering operations that can only be created on the
+/// current-context thread.
 pub struct Context<'a> {
     gl: &'a mut glow::Context,
     features: &'a Features,
@@ -27,6 +39,7 @@ pub struct Context<'a> {
     _not_send_sync: core::marker::PhantomData<*mut ()>,
 }
 
+/// An OpenGL buffer object.
 #[derive(Debug)]
 pub struct Buffer {
     buffer: glow::Buffer,
@@ -35,6 +48,7 @@ pub struct Buffer {
     role: BufferRole,
 }
 
+/// An OpenGL pipeline object.
 #[derive(Debug)]
 pub struct Pipeline {
     program: glow::Program,
@@ -51,6 +65,7 @@ pub struct Pipeline {
     cull_cw: bool,
 }
 
+/// An OpenGL texture object.
 #[derive(Debug)]
 pub struct Texture {
     texture: glow::Texture,
@@ -58,15 +73,17 @@ pub struct Texture {
     height: u32,
 }
 
+/// An OpenGL framebuffer object.
 #[derive(Debug)]
 pub struct Framebuffer {
     framebuffer: Option<glow::Framebuffer>,
     color_texture: Option<glow::Texture>,
-    color_renderbuffer: Option<glow::Renderbuffer>,
     depth_texture: Option<glow::Texture>,
-    depth_renderbuffer: Option<glow::Renderbuffer>,
+    color_buffer: Option<glow::Renderbuffer>,
+    depth_buffer: Option<glow::Renderbuffer>,
 }
 
+/// An OpenGL profiler object.
 #[derive(Debug)]
 pub struct Profiler {
     // 0 - idle, 1 - started, 2 - waiting for result
@@ -100,6 +117,13 @@ pub enum DebugMessage {
 }
 
 impl Backend {
+    /// Create a new OpenGL backend with the provided function for loading OpenGL function pointers.
+    ///
+    /// # Errors
+    /// - [`Error::InvalidContext`] if the provided loader function does not provide a valid OpenGL
+    ///   context.
+    /// - [`Error::Internal`] if an internal error occurs while creating the OpenGL context.
+    ///
     /// # Safety
     ///
     /// The caller must ensure that the provided loader function correctly loads OpenGL function
@@ -117,6 +141,8 @@ impl Backend {
         }
     }
 
+    /// Begin a new rendering scope.
+    ///
     /// # Safety
     ///
     /// The caller must ensure that the OpenGL context is current and valid for the duration of the
@@ -138,6 +164,10 @@ impl Backend {
 }
 
 impl Context<'_> {
+    /// Attach a debug callback to the OpenGL context that will be called whenever a debug message
+    /// is generated.
+    ///
+    /// Can only be called once.
     pub fn attach_debug_callback(&mut self, callback: impl Fn(DebugMessage, &str) + Send + Sync + 'static) {
         unsafe {
             self.gl.enable(glow::DEBUG_OUTPUT);
@@ -164,9 +194,9 @@ impl Context<'_> {
         const SCREEN: Framebuffer = Framebuffer {
             framebuffer: None,
             color_texture: None,
-            color_renderbuffer: None,
             depth_texture: None,
-            depth_renderbuffer: None,
+            color_buffer: None,
+            depth_buffer: None,
         };
 
         &SCREEN
@@ -243,11 +273,9 @@ impl crate::Context for Context<'_> {
             }
 
             let (format, data_type, internal_format) = color_format(layout.format);
-
             let texture = self.gl.create_texture().map_err(Error::Internal)?;
 
             self.gl.bind_texture(glow::TEXTURE_2D, Some(texture));
-
             self.gl.tex_parameter_i32(
                 glow::TEXTURE_2D,
                 glow::TEXTURE_MIN_FILTER,
@@ -403,8 +431,7 @@ impl crate::Context for Context<'_> {
 
             self.gl.bind_framebuffer(glow::FRAMEBUFFER, Some(*framebuffer));
 
-            // this is a cursed try block
-            let (color_texture, color_renderbuffer) = if let Some(format) = layout.color {
+            let (color_texture, color_buffer) = if let Some(format) = layout.color {
                 let (format, data_type, internal_format) = color_format(format);
 
                 if layout.is_color_bindable {
@@ -438,9 +465,7 @@ impl crate::Context for Context<'_> {
                     }
 
                     gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::NEAREST as i32);
-
                     gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::NEAREST as i32);
-
                     gl.framebuffer_texture_2d(
                         glow::FRAMEBUFFER,
                         glow::COLOR_ATTACHMENT0,
@@ -487,9 +512,9 @@ impl crate::Context for Context<'_> {
                 (None, None)
             };
 
-            let (depth_texture, depth_renderbuffer) = if let Some(format) = layout.depth {
-                let (format, attachment) = depth_format(format);
-
+            let (depth_texture, depth_buffer) = if let Some((format, attachment)) =
+                depth_stencil_format(layout.depth, layout.stencil)
+            {
                 if layout.is_depth_bindable {
                     let texture = DisposeOnDrop::new(self.gl.create_texture().map_err(Error::Internal)?, |obj| {
                         self.gl.delete_texture(obj)
@@ -560,8 +585,8 @@ impl crate::Context for Context<'_> {
                 framebuffer: Some(framebuffer.take()),
                 color_texture: color_texture.map(|t| t.take()),
                 depth_texture: depth_texture.map(|t| t.take()),
-                color_renderbuffer: color_renderbuffer.map(|b| b.take()),
-                depth_renderbuffer: depth_renderbuffer.map(|b| b.take()),
+                color_buffer: color_buffer.map(|b| b.take()),
+                depth_buffer: depth_buffer.map(|b| b.take()),
             })
         }
     }
@@ -608,11 +633,11 @@ impl crate::Context for Context<'_> {
                 self.gl.delete_texture(texture);
             }
 
-            if let Some(renderbuffer) = framebuffer.color_renderbuffer {
+            if let Some(renderbuffer) = framebuffer.color_buffer {
                 self.gl.delete_renderbuffer(renderbuffer);
             }
 
-            if let Some(renderbuffer) = framebuffer.depth_renderbuffer {
+            if let Some(renderbuffer) = framebuffer.depth_buffer {
                 self.gl.delete_renderbuffer(renderbuffer);
             }
         };
@@ -953,10 +978,26 @@ impl crate::Context for Context<'_> {
                     ProgramBinding::Texture2D { index } => {
                         let texture = match draw.bindings.get(i) {
                             Some(BindingData::Texture { texture }) => texture.texture,
-                            Some(BindingData::FramebufferColor { framebuffer }) => match framebuffer.color_texture {
-                                Some(texture) => texture,
-                                None => return Err(Error::InvalidBinding(i)),
-                            },
+                            Some(BindingData::Framebuffer {
+                                framebuffer,
+                                attachment,
+                            }) => {
+                                if framebuffer.framebuffer == draw.target.framebuffer {
+                                    return Err(Error::InvalidFramebuffer);
+                                }
+
+                                let texture = match attachment {
+                                    FramebufferAttachment::Color => framebuffer.color_texture,
+                                    FramebufferAttachment::Depth => framebuffer.depth_texture,
+                                    FramebufferAttachment::Stencil => None,
+                                };
+
+                                match texture {
+                                    Some(texture) => texture,
+                                    None => return Err(Error::InvalidBinding(i)),
+                                }
+                            }
+
                             _ => {
                                 return Err(Error::InvalidBinding(i));
                             }
@@ -975,7 +1016,7 @@ impl crate::Context for Context<'_> {
                     PrimitiveTopology::TriangleFan => glow::TRIANGLE_FAN,
                 },
                 0,
-                draw.triangles as i32 * 3,
+                draw.vertices as i32,
             );
 
             Ok(())

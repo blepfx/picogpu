@@ -1,9 +1,10 @@
 // work in progress, currently this is a mess
+#![allow(missing_docs)]
 
 mod util;
 
 use crate::*;
-use alloc::ffi::CString;
+use alloc::{ffi::CString, format};
 use ash::vk;
 use util::*;
 
@@ -39,6 +40,11 @@ pub struct Texture {
 
 #[derive(Debug)]
 pub struct Profiler {}
+
+#[derive(Debug)]
+pub struct Pipeline {
+    pipeline: vk::Pipeline,
+}
 
 #[derive(Debug)]
 pub enum VulkanError {
@@ -90,7 +96,7 @@ impl Context<'_> {
 impl crate::Context for Context<'_> {
     type Buffer = Buffer;
     type Texture = Texture;
-    type Pipeline = vk::Pipeline;
+    type Pipeline = Pipeline;
     type Profiler = Profiler;
     type Framebuffer = vk::Framebuffer;
 
@@ -283,8 +289,9 @@ impl crate::Context for Context<'_> {
                 .logic_op_enable(false)
                 .attachments(&color_blend_attachments);
 
+            let pipeline_stages = [vertex_stage, fragment_stage];
             let pipeline_info = vk::GraphicsPipelineCreateInfo::default()
-                .stages(&[vertex_stage, fragment_stage])
+                .stages(&pipeline_stages)
                 .vertex_input_state(&vertex_input)
                 .input_assembly_state(&input_assembly)
                 .viewport_state(&viewport_state)
@@ -294,7 +301,13 @@ impl crate::Context for Context<'_> {
                 .color_blend_state(&color_blend_state)
                 .dynamic_state(&dynamic_state);
 
-            todo!()
+            let pipeline = self
+                .backend
+                .device
+                .create_graphics_pipelines(vk::PipelineCache::null(), &[pipeline_info], None)
+                .map_err(|(_, err)| Error::Internal(format!("Failed to create graphics pipeline: {:?}", err)))?[0];
+
+            Ok(Pipeline { pipeline })
         }
     }
 
@@ -321,7 +334,9 @@ impl crate::Context for Context<'_> {
     }
 
     fn delete_pipeline(&self, pipeline: Self::Pipeline) {
-        todo!()
+        unsafe {
+            self.backend.device.destroy_pipeline(pipeline.pipeline, None);
+        }
     }
 
     fn delete_framebuffer(&self, framebuffer: Self::Framebuffer) {

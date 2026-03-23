@@ -14,7 +14,7 @@ fn main() {
 
         let buffer = context
             .create_buffer(BufferLayout {
-                capacity: 32,
+                capacity: 24,
                 dynamic: true,
                 role: BufferRole::Uniform,
             })
@@ -179,7 +179,7 @@ fn main() {
                             },
 
                             scissor: None,
-                            triangles: 2,
+                            vertices: 2 * 3,
 
                             bindings: &[
                                 BindingData::Buffer {

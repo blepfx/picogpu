@@ -1,6 +1,4 @@
-use crate::{
-    BlendFactor, BlendMode, BlendOp, BufferRole, CompareFn, DepthStencilFormat, Error, StencilOp, TextureFormat,
-};
+use crate::*;
 use alloc::vec::Vec;
 use core::{
     ffi::{CStr, c_void},
@@ -375,13 +373,17 @@ pub fn color_format(format: TextureFormat) -> (u32, u32, u32) {
     }
 }
 
-pub fn depth_format(format: DepthStencilFormat) -> (u32, u32) {
-    match format {
-        DepthStencilFormat::Depth24Stencil8 => (glow::DEPTH24_STENCIL8, glow::DEPTH_STENCIL),
-        DepthStencilFormat::Depth32FStencil8 => (glow::DEPTH32F_STENCIL8, glow::DEPTH_STENCIL),
-        DepthStencilFormat::Depth32F => (glow::DEPTH_COMPONENT32F, glow::DEPTH_COMPONENT),
-        DepthStencilFormat::Stencil8 => (glow::STENCIL_INDEX8, glow::STENCIL_INDEX),
-    }
+pub fn depth_stencil_format(depth: Option<DepthFormat>, stencil: Option<StencilFormat>) -> Option<(u32, u32)> {
+    Some(match (depth, stencil) {
+        (Some(DepthFormat::D24), Some(StencilFormat::S8)) => (glow::DEPTH24_STENCIL8, glow::DEPTH_STENCIL_ATTACHMENT),
+        (Some(DepthFormat::D32F), Some(StencilFormat::S8)) => (glow::DEPTH32F_STENCIL8, glow::DEPTH_STENCIL_ATTACHMENT),
+        (Some(DepthFormat::D24), None) => (glow::DEPTH24_STENCIL8, glow::DEPTH_ATTACHMENT),
+        (Some(DepthFormat::D32F), None) => (glow::DEPTH32F_STENCIL8, glow::DEPTH_ATTACHMENT),
+        // we use a combined depth/stencil format for stencil-only attachments since OpenGL doesn't support stencil-only
+        // renderbuffers up until OpenGL 4.3
+        (None, Some(StencilFormat::S8)) => (glow::DEPTH24_STENCIL8, glow::DEPTH_STENCIL_ATTACHMENT),
+        (None, None) => return None,
+    })
 }
 
 pub fn buffer_target(role: BufferRole) -> u32 {
