@@ -1,6 +1,6 @@
-use alloc::string::String;
 use core::{fmt::Debug, time::Duration};
 
+use alloc::string::String;
 pub use buffer::*;
 pub use draw::*;
 pub use framebuffer::*;
@@ -10,18 +10,18 @@ pub use texture::*;
 
 /// The main interface for interacting with a backend, used for creating and managing resources
 /// (buffers, textures, pipelines, framebuffers, profilers) and issuing draw calls.
-pub trait Context {
+pub trait Context: Clone {
     /// A buffer object, used for storing arbitrary data on the GPU
-    type Buffer: 'static + Debug + Send;
+    type Buffer: Debug;
     /// A texture object, used for storing image data on the GPU
-    type Texture: 'static + Debug + Send;
+    type Texture: Debug;
     /// A pipeline object, represents a shader program and associated draw state (blend mode,
     /// stencil, depth test, etc.)
-    type Pipeline: 'static + Debug + Send;
+    type Pipeline: Debug;
     /// A profiler object, used for measuring GPU execution time of draw calls.
-    type Profiler: 'static + Debug + Send;
+    type Profiler: Debug;
     /// A framebuffer object, used as a texture you can draw to and sample from.
-    type Framebuffer: 'static + Debug + Send;
+    type Framebuffer: Debug;
 
     /// The capabilities of the GPU, used for determining what features are supported and the limits
     /// of various resources (max texture size, max buffer size, etc.)
@@ -81,21 +81,6 @@ pub trait Context {
     /// - [`Error::UnsupportedFeature`] if the GPU does not support profiling.
     /// - [`Error::Internal`] if an internal error occurs while creating the profiler.
     fn create_profiler(&self) -> Result<Self::Profiler, Error>;
-
-    /// Deletes a buffer, freeing its memory on the GPU.
-    fn delete_buffer(&self, buffer: Self::Buffer);
-
-    /// Deletes a texture, freeing its memory on the GPU.
-    fn delete_texture(&self, texture: Self::Texture);
-
-    /// Deletes a pipeline, freeing its resources on the GPU.
-    fn delete_pipeline(&self, pipeline: Self::Pipeline);
-
-    /// Deletes a framebuffer, freeing its resources on the GPU.
-    fn delete_framebuffer(&self, framebuffer: Self::Framebuffer);
-
-    /// Deletes a profiler, freeing its resources on the GPU.
-    fn delete_profiler(&self, profiler: Self::Profiler);
 
     /// Uploads data to a texture, replacing the contents of the texture at the given bounds.
     /// The data must match the layout specified by the (width, height, format) triple.
@@ -174,7 +159,7 @@ pub trait Context {
 
     /// Begins a profiling section for the given profiler, which will measure the GPU execution time
     /// of subsequent draw calls until [`Context::end_profiler`] is called with the same profiler.
-    fn begin_profiler(&self, profiler: &Self::Profiler);
+    fn begin_profiler(&self, profiler: &Self::Profiler) -> Result<(), Error>;
 
     /// Ends a profiling section for the given profiler, returning the measured GPU execution time
     /// of the draw calls that were executed since [`Context::begin_profiler`] was called on the
@@ -184,7 +169,7 @@ pub trait Context {
     /// and can be `None` if the GPU has not finished executing the draw calls yet. Once the
     /// execution time is available, it will be returned by this method on subsequent calls; the
     /// profiler will do nothing until a result is available
-    fn end_profiler(&self, profiler: &Self::Profiler) -> Option<Duration>;
+    fn end_profiler(&self, profiler: &Self::Profiler) -> Result<Option<Duration>, Error>;
 
     /// Clears a framebuffer with the given clear parameters, which can specify clearing the color,
     /// depth, and stencil buffers in a specified region (or the whole framebuffer if the scissor is
@@ -206,6 +191,13 @@ pub trait Context {
     ///   at the same time.
     /// - [`Error::Internal`] if an internal error occurs while issuing the draw call.
     fn draw(&self, draw: DrawRequest<Self>) -> Result<(), Error>;
+
+    /// Submits all pending commands to the GPU for execution. This should be called at the end of
+    /// each frame.
+    ///
+    /// # Errors
+    /// - [`Error::Internal`] if an internal error occurs while submitting the commands.
+    fn submit(&self) -> Result<(), Error>;
 }
 
 /// The capabilities of the GPU, used for determining what features are supported and the limits of
@@ -400,7 +392,7 @@ mod texture {
 
     /// The wrapping mode used when sampling from a texture, which determines how texture
     /// coordinates outside the range [0, 1] are handled
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    #[derive(Debug, Clone, Copy, PartialEq)]
     pub enum TextureWrap {
         /// Clamp texture coordinates to the range [0, 1].
         Clamp,
@@ -408,6 +400,8 @@ mod texture {
         Repeat,
         /// Mirror the texture coordinates and repeat
         Mirror,
+        /// Constant border color
+        Border,
     }
 
     /// A region of pixels
@@ -441,6 +435,8 @@ mod texture {
         pub wrap_x: TextureWrap,
         /// Wrapping mode for the Y axis
         pub wrap_y: TextureWrap,
+        /// Border color used when the wrapping mode is [`TextureWrap::Border`]
+        pub wrap_border: [f32; 4],
     }
 
     impl TextureFormat {
@@ -857,7 +853,7 @@ mod draw {
     /// A request to the backend to clear a region of a framebuffer with the specified clear
     /// parameters.
     #[derive(Debug, Clone, Copy)]
-    pub struct ClearRequest<'a, C: Context + ?Sized> {
+    pub struct ClearRequest<'a, C: Context> {
         /// The framebuffer to clear.
         pub target: &'a C::Framebuffer,
         /// The subregion of the framebuffer to clear, or `None` to clear the whole framebuffer.
@@ -872,7 +868,7 @@ mod draw {
 
     /// A request to the backend to draw a batch of primitives.
     #[derive(Debug, Clone, Copy)]
-    pub struct DrawRequest<'a, C: Context + ?Sized> {
+    pub struct DrawRequest<'a, C: Context> {
         /// The framebuffer to draw onto.
         pub target: &'a C::Framebuffer,
 
@@ -895,7 +891,7 @@ mod draw {
 
     /// A resource binding for a draw call, which can be a texture, framebuffer, or a buffer region.
     #[derive(Debug, Clone, Copy)]
-    pub enum BindingData<'a, C: Context + ?Sized> {
+    pub enum BindingData<'a, C: Context> {
         /// A texture/sampler binding.
         Texture {
             /// The texture to bind.

@@ -1,12 +1,27 @@
-use picogpu::*;
+use picogpu::{
+    opengl::{Surface, SurfaceError},
+    *,
+};
+
+struct GlSurfaceAdapter<'a>(picoview::GlContext<'a>);
+
+unsafe impl Surface for GlSurfaceAdapter<'_> {
+    fn swap_buffers(&self) -> Result<(), SurfaceError> {
+        self.0.swap_buffers().map_err(|_| SurfaceError::InvalidContext)
+    }
+
+    fn make_current(&self, current: bool) -> Result<(), SurfaceError> {
+        self.0.make_current(current).map_err(|_| SurfaceError::InvalidContext)
+    }
+
+    fn get_proc_address(&self, name: &core::ffi::CStr) -> *const core::ffi::c_void {
+        self.0.get_proc_address(name)
+    }
+}
 
 fn main() {
     picoview::WindowBuilder::new(|window| {
-        let opengl = window.opengl().unwrap();
-        opengl.make_current(true).unwrap();
-
-        let mut backend = unsafe { opengl::Backend::new(|x| opengl.get_proc_address(x) as *const _).unwrap() };
-        let mut context = unsafe { backend.begin() };
+        let context = opengl::Context::new(GlSurfaceAdapter(window.opengl().unwrap())).unwrap();
 
         context.attach_debug_callback(|kind, message| {
             println!("[{:?}] {}", kind, message);
@@ -30,6 +45,7 @@ fn main() {
                     filter_min: TextureFilter::Linear,
                     wrap_x: TextureWrap::Repeat,
                     wrap_y: TextureWrap::Repeat,
+                    wrap_border: [0.0, 0.0, 0.0, 1.0],
                 })
                 .unwrap();
 
@@ -134,16 +150,11 @@ fn main() {
             picoview::Event::WindowFrame => {
                 frames += 1;
 
-                let context = unsafe {
-                    opengl.make_current(true).unwrap();
-                    backend.begin()
-                };
-
-                context.begin_profiler(&profiler_1);
+                context.begin_profiler(&profiler_1).unwrap();
 
                 context
                     .clear(ClearRequest {
-                        target: context.screen(),
+                        target: &context.screen(),
                         color: Some([0.1, 0.1, 0.1, 1.0]),
                         depth: Some(1.0),
                         stencil: None,
@@ -168,7 +179,7 @@ fn main() {
 
                     context
                         .draw(DrawRequest {
-                            target: context.screen(),
+                            target: &context.screen(),
                             pipeline: &pipeline,
 
                             viewport: TextureBounds {
@@ -193,9 +204,8 @@ fn main() {
                         .unwrap();
                 }
 
-                context.end_profiler(&profiler_1);
-
-                opengl.swap_buffers().unwrap();
+                context.end_profiler(&profiler_1).unwrap();
+                context.submit().unwrap();
             }
 
             picoview::Event::WindowClose => {
