@@ -10,12 +10,16 @@ unsafe impl Surface for GlSurfaceAdapter<'_> {
         self.0.swap_buffers().map_err(|_| SurfaceError::InvalidContext)
     }
 
-    fn make_current(&self, current: bool) -> Result<(), SurfaceError> {
-        self.0.make_current(current).map_err(|_| SurfaceError::InvalidContext)
+    fn make_current(&self) -> Result<(), SurfaceError> {
+        self.0.make_current(true).map_err(|_| SurfaceError::InvalidContext)
     }
 
     fn get_proc_address(&self, name: &core::ffi::CStr) -> *const core::ffi::c_void {
         self.0.get_proc_address(name)
+    }
+
+    fn is_current(&self) -> bool {
+        true
     }
 }
 

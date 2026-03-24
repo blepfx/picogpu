@@ -1,8 +1,6 @@
-use core::ffi::{CStr, c_void};
-
-use alloc::string::String;
-
 use crate::Error;
+use alloc::string::String;
+use core::ffi::{CStr, c_void};
 
 /// A trait representing an OpenGL surface. This must be implemented by the user of the OpenGL
 /// backend/window provider, etc.
@@ -14,9 +12,19 @@ use crate::Error;
 ///   backend, or a `null`-like pointer for unsupported functions.
 /// - make_current must correctly set the current OpenGL context for the calling thread
 pub unsafe trait Surface {
+    /// Get the address of an OpenGL function by name. The returned pointer must be valid for all
+    /// OpenGL functions used by the backend, or a `null`-like pointer for unsupported functions.
     fn get_proc_address(&self, name: &CStr) -> *const c_void;
-    fn make_current(&self, current: bool) -> Result<(), SurfaceError>;
+
+    /// Swap the front and back buffers of the surface, presenting the rendered image to the screen.
     fn swap_buffers(&self) -> Result<(), SurfaceError>;
+
+    /// Make the OpenGL context associated with this surface current on the calling thread.
+    fn make_current(&self) -> Result<(), SurfaceError>;
+
+    /// Check if the OpenGL context associated with this surface is currently bound to the calling
+    /// thread.
+    fn is_current(&self) -> bool;
 }
 
 /// An error that has occurred in the OpenGL surface, such as an invalid context, lost context, etc.

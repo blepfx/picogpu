@@ -30,9 +30,7 @@ pub struct Context<'a>(Rc<RefCell<ContextThread<'a>>>);
 struct ContextThread<'a> {
     gl: glow::Context,
     features: Features,
-
     surface: Box<dyn Surface + 'a>,
-    is_current: bool,
 
     last_pipeline: Option<glow::Program>,
     last_viewport: Option<TextureBounds>,
@@ -134,7 +132,7 @@ impl<'a> Context<'a> {
     /// - [`Error::Internal`] if an internal error occurs while creating the OpenGL context.
     pub fn new(surface: impl Surface + 'a) -> Result<Self, Error> {
         unsafe {
-            surface.make_current(true)?;
+            surface.make_current()?;
 
             if !is_context_valid(&mut |f| surface.get_proc_address(f)) {
                 return Err(Error::InvalidContext);
@@ -146,9 +144,7 @@ impl<'a> Context<'a> {
             Ok(Self(Rc::new(RefCell::new(ContextThread {
                 gl,
                 features,
-
                 surface: Box::new(surface),
-                is_current: true,
 
                 last_pipeline: None,
                 last_viewport: None,
@@ -158,24 +154,11 @@ impl<'a> Context<'a> {
         }
     }
 
-    /// Force the current context state of the thread. This is used internally to handle cases where
-    /// the context may be made current or not current by external code, such as the windowing
-    /// system, etc.
-    ///
-    /// # Safety
-    /// The caller must ensure that the provided `is_current` value accurately reflects the current
-    /// state of the OpenGL context for the calling thread.
-    pub unsafe fn force_current(&self, is_current: bool) {
-        let mut context = self.0.borrow_mut();
-        context.is_current = is_current;
-    }
-
     fn with_current<R>(&self, f: impl FnOnce(&mut ContextThread) -> Result<R, Error>) -> Result<R, Error> {
         let mut context = self.0.borrow_mut();
 
-        if !context.is_current {
-            context.surface.make_current(true)?;
-            context.is_current = true;
+        if !context.surface.is_current() {
+            context.surface.make_current()?;
         }
 
         f(&mut context)
