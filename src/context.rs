@@ -33,7 +33,7 @@ pub trait Context: Clone {
     /// - [`Error::UnsupportedSize`] if the requested buffer size is larger than what is supported.
     ///   Note that the alignment requirement does not apply here (a backend could allocate more
     ///   memory than requested if needed).
-    /// - [`Error::Internal] if an internal error occurs while creating the buffer.
+    /// - [`Error::Internal`] if an internal error occurs while creating the buffer.
     fn create_buffer(&self, layout: BufferLayout) -> Result<Self::Buffer, Error>;
 
     /// Creates a new texture with the given layout, and returns a handle to it.
@@ -529,8 +529,12 @@ mod shader {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     #[non_exhaustive]
     pub enum ShaderFormat {
-        /// GLSL shader format.
-        Glsl,
+        /// GLSL shader format of a specified GLSL version (120, 330, etc.)
+        Glsl(u32),
+
+        /// GLSL ES shader format of a specified GLSL ES version (100, 300, etc.)
+        Gles(u32),
+
         /// SPIR-V shader format.
         SpirV,
     }
@@ -546,7 +550,7 @@ mod shader {
         SpirV(ShaderSpirV<'a>),
     }
 
-    /// The GLSL shader representation.
+    /// The GLSL/GLSL ES shader representation.
     #[derive(Debug, Clone, Copy)]
     pub struct ShaderGlsl<'a> {
         /// The vertex shader source code.
@@ -570,16 +574,6 @@ mod shader {
         pub fragment_module: &'a [u32],
         /// The entry point name for the fragment shader
         pub fragment_entry: &'a str,
-    }
-
-    impl Shader<'_> {
-        /// Returns the shader format of this shader.
-        pub fn format(&self) -> ShaderFormat {
-            match self {
-                Shader::Glsl(_) => ShaderFormat::Glsl,
-                Shader::SpirV(_) => ShaderFormat::SpirV,
-            }
-        }
     }
 
     impl<'a> From<ShaderGlsl<'a>> for Shader<'a> {
@@ -687,13 +681,13 @@ mod pipeline {
         Replace,
         /// Bitwise inverse.
         Invert,
-        /// Increment (saturate)
+        /// Saturating increment (clamp to max value)   
         IncrementClamp,
-        /// Decrement (saturate)
+        /// Saturating decrement (clamp to min value)
         DecrementClamp,
-        /// Increment (wrap)
+        /// Wrapping increment (wrap to min value when exceeding max value)
         IncrementWrap,
-        /// Decrement (wrap)
+        /// Wrapping decrement (wrap to max value when exceeding min value)
         DecrementWrap,
     }
 

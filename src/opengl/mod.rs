@@ -219,7 +219,7 @@ impl<'a> crate::Context for Context<'a> {
         let thread = self.0.borrow();
 
         Capabilities {
-            shader_format: ShaderFormat::Glsl,
+            shader_format: thread.features.glsl_version(),
             supports_profiler: thread.features.query_time_elapsed,
             texture_size: thread.features.max_texture_size,
             texture_bindings: thread.features.max_texture_image_units,

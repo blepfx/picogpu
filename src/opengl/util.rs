@@ -8,6 +8,7 @@ use core::{
 use glow::HasContext;
 
 pub struct Features {
+    pub version: glow::Version,
     pub uniform_buffers: bool,
     pub storage_buffers: bool,
     pub query_time_elapsed: bool,
@@ -69,6 +70,7 @@ impl Features {
             let max_renderbuffer_size = gl.get_parameter_i32(glow::MAX_RENDERBUFFER_SIZE) as u32;
 
             Features {
+                version: version.clone(),
                 uniform_buffers,
                 storage_buffers,
                 query_time_elapsed,
@@ -142,6 +144,29 @@ impl Features {
             BufferRole::Uniform => self.uniform_buffer_offset_alignment,
             BufferRole::Storage => self.storage_buffer_offset_alignment,
             BufferRole::Vertex | BufferRole::Index => 1,
+        }
+    }
+
+    pub fn glsl_version(&self) -> ShaderFormat {
+        if self.version.is_embedded {
+            let glsl = match (self.version.major, self.version.minor) {
+                v if v >= (3, 0) => self.version.major * 100 + self.version.minor * 10,
+                _ => 100,
+            };
+
+            ShaderFormat::Gles(glsl)
+        } else {
+            let glsl = match (self.version.major, self.version.minor) {
+                v if v >= (3, 3) => self.version.major * 100 + self.version.minor * 10,
+                v if v >= (3, 2) => 150,
+                v if v >= (3, 1) => 140,
+                v if v >= (3, 0) => 130,
+                v if v >= (2, 1) => 120,
+                v if v >= (2, 0) => 110,
+                _ => 100,
+            };
+
+            ShaderFormat::Glsl(glsl)
         }
     }
 }
