@@ -20,11 +20,12 @@ pub unsafe trait Surface {
     fn swap_buffers(&self) -> Result<(), SurfaceError>;
 
     /// Make the OpenGL context associated with this surface current on the calling thread.
+    /// This must ensure that subsequent OpenGL calls on the calling thread will affect this
+    /// surface's context.
+    ///
+    /// The implementation should check if the context is already current and do nothing in
+    /// that case (for better performance).
     fn make_current(&self) -> Result<(), SurfaceError>;
-
-    /// Check if the OpenGL context associated with this surface is currently bound to the calling
-    /// thread.
-    fn is_current(&self) -> bool;
 }
 
 /// An error that has occurred in the OpenGL surface, such as an invalid context, lost context, etc.

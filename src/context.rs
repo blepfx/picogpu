@@ -196,8 +196,10 @@ pub trait Context: Clone {
     /// each frame.
     ///
     /// # Errors
+    /// - [`Error::InvalidContext`] if the current backend-defined context is no longer valid (e.g.
+    ///   lost OpenGL context).
     /// - [`Error::Internal`] if an internal error occurs while submitting the commands.
-    fn submit(&self) -> Result<(), Error>;
+    fn present(&self) -> Result<(), Error>;
 }
 
 /// The capabilities of the GPU, used for determining what features are supported and the limits of

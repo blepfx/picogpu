@@ -156,11 +156,7 @@ impl<'a> Context<'a> {
 
     fn with_current<R>(&self, f: impl FnOnce(&mut ContextThread) -> Result<R, Error>) -> Result<R, Error> {
         let mut context = self.0.borrow_mut();
-
-        if !context.surface.is_current() {
-            context.surface.make_current()?;
-        }
-
+        context.surface.make_current()?;
         f(&mut context)
     }
 }
@@ -1021,7 +1017,7 @@ impl<'a> crate::Context for Context<'a> {
         })
     }
 
-    fn submit(&self) -> Result<(), Error> {
+    fn present(&self) -> Result<(), Error> {
         self.with_current(|thread| {
             thread.surface.swap_buffers()?;
             Ok(())

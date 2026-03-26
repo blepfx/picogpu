@@ -17,10 +17,6 @@ unsafe impl Surface for GlSurfaceAdapter<'_> {
     fn get_proc_address(&self, name: &core::ffi::CStr) -> *const core::ffi::c_void {
         self.0.get_proc_address(name)
     }
-
-    fn is_current(&self) -> bool {
-        true
-    }
 }
 
 fn main() {
@@ -209,7 +205,7 @@ fn main() {
                 }
 
                 context.end_profiler(&profiler_1).unwrap();
-                context.submit().unwrap();
+                context.present().unwrap();
             }
 
             picoview::Event::WindowClose => {
