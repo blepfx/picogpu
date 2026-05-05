@@ -10,7 +10,7 @@ pub use texture::*;
 
 /// The main interface for interacting with a backend, used for creating and managing resources
 /// (buffers, textures, pipelines, framebuffers, profilers) and issuing draw calls.
-pub trait Context: Clone {
+pub trait Context: Sized {
     /// A buffer object, used for storing arbitrary data on the GPU
     type Buffer: Debug;
     /// A texture object, used for storing image data on the GPU
@@ -806,6 +806,17 @@ mod pipeline {
 
             alpha_src: BlendFactor::One,
             alpha_dst: BlendFactor::Zero,
+            alpha_op: BlendOp::Add,
+        };
+
+        /// Additive blending mode
+        pub const ADDITIVE: Self = Self {
+            color_src: BlendFactor::One,
+            color_dst: BlendFactor::One,
+            color_op: BlendOp::Add,
+
+            alpha_src: BlendFactor::One,
+            alpha_dst: BlendFactor::One,
             alpha_op: BlendOp::Add,
         };
 
