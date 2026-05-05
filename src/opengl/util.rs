@@ -395,6 +395,7 @@ pub fn color_format(format: TextureFormat) -> (u32, u32, u32) {
         TextureFormat::R8S => (glow::RED, glow::BYTE, glow::R8_SNORM),
         TextureFormat::R16S => (glow::RED, glow::SHORT, glow::R16_SNORM),
         TextureFormat::R32F => (glow::RED, glow::FLOAT, glow::R32F),
+        TextureFormat::RG32F => (glow::RG, glow::FLOAT, glow::RG32F),
     }
 }
 

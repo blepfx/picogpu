@@ -379,6 +379,8 @@ mod texture {
         R16S,
         /// 32-bit floating point red channel
         R32F,
+        /// 32-bit floating point red and green channels
+        RG32F,
     }
 
     /// The filtering mode used when sampling from a texture, which determines how the texture is
@@ -451,6 +453,7 @@ mod texture {
                 TextureFormat::R8S => 1,
                 TextureFormat::R16S => 2,
                 TextureFormat::R32F => 4,
+                TextureFormat::RG32F => 8,
             }
         }
     }
