@@ -313,9 +313,15 @@ impl<'a> crate::Context for Context<'a> {
                 },
             );
 
-            thread
-                .gl
-                .tex_parameter_f32_slice(glow::TEXTURE_2D, glow::TEXTURE_BORDER_COLOR, &layout.wrap_border);
+            thread.gl.tex_parameter_f32_slice(
+                glow::TEXTURE_2D,
+                glow::TEXTURE_BORDER_COLOR,
+                match layout.wrap_border {
+                    TextureBorder::Transparent => &[0.0, 0.0, 0.0, 0.0],
+                    TextureBorder::Black => &[0.0, 0.0, 0.0, 1.0],
+                    TextureBorder::White => &[1.0, 1.0, 1.0, 1.0],
+                },
+            );
 
             thread.gl.tex_image_2d(
                 glow::TEXTURE_2D,

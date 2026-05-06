@@ -411,6 +411,18 @@ mod texture {
         Border,
     }
 
+    /// The border color used when the wrapping mode is [`TextureWrap::Border`]. This determines the
+    /// color returned when sampling a texture with out-of-bounds texture coordinates.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum TextureBorder {
+        /// Transparent (0.0, 0.0, 0.0, 0.0)
+        Transparent,
+        /// Opaque black (0.0, 0.0, 0.0, 1.0)
+        Black,
+        /// Opaque white (1.0, 1.0, 1.0, 1.0)
+        White,
+    }
+
     /// A region of pixels
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct TextureBounds {
@@ -443,7 +455,7 @@ mod texture {
         /// Wrapping mode for the Y axis
         pub wrap_y: TextureWrap,
         /// Border color used when the wrapping mode is [`TextureWrap::Border`]
-        pub wrap_border: [f32; 4],
+        pub wrap_border: TextureBorder,
     }
 
     impl TextureFormat {

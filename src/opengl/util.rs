@@ -378,8 +378,8 @@ pub unsafe fn apply_pipeline(gl: &glow::Context, pipeline: &super::Pipeline) {
                 blend_factor(pipeline.color_blend.alpha_dst),
             );
             gl.blend_equation_separate(
-                blend_equation(pipeline.color_blend.color_op),
-                blend_equation(pipeline.color_blend.alpha_op),
+                blend_op(pipeline.color_blend.color_op),
+                blend_op(pipeline.color_blend.alpha_op),
             );
         }
 
@@ -468,7 +468,7 @@ pub fn blend_factor(blend: BlendFactor) -> u32 {
     }
 }
 
-pub fn blend_equation(op: BlendOp) -> u32 {
+pub fn blend_op(op: BlendOp) -> u32 {
     match op {
         BlendOp::Add => glow::FUNC_ADD,
         BlendOp::Subtract => glow::FUNC_SUBTRACT,

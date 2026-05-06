@@ -45,7 +45,7 @@ fn main() {
                     filter_min: TextureFilter::Linear,
                     wrap_x: TextureWrap::Repeat,
                     wrap_y: TextureWrap::Repeat,
-                    wrap_border: [0.0, 0.0, 0.0, 1.0],
+                    wrap_border: TextureBorder::White,
                 })
                 .unwrap();
 
