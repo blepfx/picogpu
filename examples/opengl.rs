@@ -29,7 +29,7 @@ fn main() {
 
         let buffer = context
             .create_buffer(BufferLayout {
-                capacity: 24,
+                capacity: 32,
                 dynamic: true,
                 role: BufferRole::Uniform,
             })
@@ -126,7 +126,7 @@ fn main() {
                     .into(),
                     topology: PrimitiveTopology::TriangleList,
                     color_outputs: &[TextureFormat::RGBA8],
-                    color_mask: [true; 4],
+                    color_mask: ColorMask::ALL,
                     color_blend: BlendMode::ALPHA,
                     depth_test: CompareFn::Always,
                     depth_write: false,

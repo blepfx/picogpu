@@ -18,7 +18,7 @@ use core::{
     fmt::Debug,
     time::Duration,
 };
-use glow::{COLOR_ATTACHMENT0, HasContext};
+use glow::HasContext;
 use util::*;
 
 pub use surface::{Surface, SurfaceError};
@@ -58,15 +58,15 @@ pub struct Pipeline<'a> {
     vertex_array: glow::VertexArray,
     bindings: Vec<ProgramBinding>,
 
-    topology: PrimitiveTopology,
     color_blend: BlendMode,
-    color_mask: [bool; 4],
+    color_mask: ColorMask,
     depth_test: CompareFn,
     depth_write: bool,
     stencil_ccw: StencilFace,
     stencil_cw: StencilFace,
     cull_ccw: bool,
     cull_cw: bool,
+    topology: PrimitiveTopology,
 }
 
 /// An OpenGL texture object.
@@ -153,14 +153,6 @@ impl<'a> Context<'a> {
         }
     }
 
-    fn with_current<R>(&self, f: impl FnOnce(&mut ContextThread) -> Result<R, Error>) -> Result<R, Error> {
-        let mut context = self.0.borrow_mut();
-        context.surface.make_current()?;
-        f(&mut context)
-    }
-}
-
-impl<'a> Context<'a> {
     /// Attach a debug callback to the OpenGL context that will be called whenever a debug message
     /// is generated.
     ///
@@ -198,6 +190,12 @@ impl<'a> Context<'a> {
             depth: None,
         }
     }
+
+    fn with_current<R>(&self, f: impl FnOnce(&mut ContextThread) -> Result<R, Error>) -> Result<R, Error> {
+        let mut context = self.0.borrow_mut();
+        context.surface.make_current()?;
+        f(&mut context)
+    }
 }
 
 impl<'a> crate::Context for Context<'a> {
@@ -220,7 +218,7 @@ impl<'a> crate::Context for Context<'a> {
             framebuffer_msaa: thread.features.max_framebuffer_msaa,
             framebuffer_outputs: thread.features.max_framebuffer_outputs,
             uniform_buffer_size: thread.features.max_uniform_buffer_size as u64,
-            storage_buffer_size: thread.features.max_storage_buffer_size,
+            storage_buffer_size: thread.features.max_storage_buffer_size as u64,
             uniform_buffer_alignment: thread.features.uniform_buffer_offset_alignment,
             storage_buffer_alignment: thread.features.storage_buffer_offset_alignment,
             uniform_buffer_bindings: thread.features.max_uniform_buffer_bindings,
@@ -449,7 +447,7 @@ impl<'a> crate::Context for Context<'a> {
                     let (format, data_type, internal_format) = color_format(*format);
                     let storage = FramebufferStorage::create(
                         &thread.gl,
-                        COLOR_ATTACHMENT0 + index as u32,
+                        glow::COLOR_ATTACHMENT0 + index as u32,
                         format,
                         data_type,
                         internal_format,
@@ -835,7 +833,11 @@ impl<'a> crate::Context for Context<'a> {
                             _ => return Err(Error::InvalidBinding(i)),
                         };
 
-                        if buffer.role != *role || data_size < size {
+                        if buffer.role != *role || *data_size < *size as u64 {
+                            return Err(Error::InvalidBinding(i));
+                        }
+
+                        if offset.saturating_add(*data_size) > buffer.capacity as u64 {
                             return Err(Error::InvalidBinding(i));
                         }
 

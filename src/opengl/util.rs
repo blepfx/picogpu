@@ -30,7 +30,7 @@ pub struct Features {
 #[derive(Debug, Clone, Copy)]
 pub enum ProgramBinding {
     Unbound,
-    Buffer { index: u32, size: u64, role: BufferRole },
+    Buffer { index: u32, size: u32, role: BufferRole },
     Texture2D { index: u32 },
 }
 
@@ -309,7 +309,7 @@ pub unsafe fn prepare_pipeline_bindings(
                 uniform_index += 1;
 
                 let size =
-                    gl.get_active_uniform_block_parameter_i32(program, index, glow::UNIFORM_BLOCK_DATA_SIZE) as u64;
+                    gl.get_active_uniform_block_parameter_i32(program, index, glow::UNIFORM_BLOCK_DATA_SIZE) as u32;
 
                 return Ok(ProgramBinding::Buffer {
                     index,
@@ -332,7 +332,7 @@ pub unsafe fn prepare_pipeline_bindings(
 
                 return Ok(ProgramBinding::Buffer {
                     index,
-                    size: data.first().copied().unwrap_or(0) as u64,
+                    size: data.first().copied().unwrap_or(0) as u32,
                     role: BufferRole::Storage,
                 });
             }
@@ -384,8 +384,12 @@ pub unsafe fn apply_pipeline(gl: &glow::Context, pipeline: &super::Pipeline) {
         }
 
         // color mask
-        let [r, g, b, a] = pipeline.color_mask;
-        gl.color_mask(r, g, b, a);
+        gl.color_mask(
+            pipeline.color_mask.red,
+            pipeline.color_mask.green,
+            pipeline.color_mask.blue,
+            pipeline.color_mask.alpha,
+        );
 
         // depth
         gl.depth_mask(pipeline.depth_write);

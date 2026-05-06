@@ -232,7 +232,7 @@ pub struct Capabilities {
     pub uniform_buffer_bindings: u32,
 
     /// Maximum supported size of a buffer with role [`BufferRole::Storage`], in bytes.
-    pub storage_buffer_size: u32,
+    pub storage_buffer_size: u64,
     /// Alignment requirement for storage buffer offsets, in bytes.
     pub storage_buffer_alignment: u32,
     /// Maximum supported number of storage buffer bindings per drawcall.
@@ -632,7 +632,7 @@ mod pipeline {
         /// A bitmask that determines which color channels are written to the framebuffer. The order
         /// of the channels is RGBA, so for example, [true, true, true, false] means that
         /// the RGB channels are written, but the alpha channel is not.
-        pub color_mask: [bool; 4],
+        pub color_mask: ColorMask,
 
         /// Depth test function.
         ///
@@ -660,6 +660,29 @@ mod pipeline {
         /// The primitive topology used for drawing, which determines how the vertex ordering is
         /// interpreted as primitives.
         pub topology: PrimitiveTopology,
+    }
+
+    /// A bitmask that determines which color channels are written to the framebuffer.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct ColorMask {
+        /// If `true`, the red channel is written
+        pub red: bool,
+        /// If `true`, the green channel is written
+        pub green: bool,
+        /// If `true`, the blue channel is written
+        pub blue: bool,
+        /// If `true`, the alpha channel is written
+        pub alpha: bool,
+    }
+
+    impl ColorMask {
+        /// A color mask that enables writing to all channels (RGBA).
+        pub const ALL: Self = Self {
+            red: true,
+            green: true,
+            blue: true,
+            alpha: true,
+        };
     }
 
     /// A comparison function used for depth and stencil tests
