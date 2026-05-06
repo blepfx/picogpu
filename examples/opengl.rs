@@ -125,7 +125,8 @@ fn main() {
                     }
                     .into(),
                     topology: PrimitiveTopology::TriangleList,
-                    color_format: TextureFormat::RGBA8,
+                    color_outputs: &[TextureFormat::RGBA8],
+                    color_mask: [true; 4],
                     color_blend: BlendMode::ALPHA,
                     depth_test: CompareFn::Always,
                     depth_write: false,

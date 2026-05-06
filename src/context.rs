@@ -1,6 +1,6 @@
+use alloc::string::String;
 use core::{fmt::Debug, time::Duration};
 
-use alloc::string::String;
 pub use buffer::*;
 pub use draw::*;
 pub use framebuffer::*;
@@ -70,7 +70,8 @@ pub trait Context: Sized {
     /// # Errors
     /// - [`Error::UnsupportedSize`] if the requested framebuffer dimensions are larger than what is
     ///   supported.
-    /// - [`Error::UnsupportedFormat`] if the requested color/depth/stencil format is not supported.
+    /// - [`Error::UnsupportedFormat`] if the requested color/depth/stencil format is not supported,
+    ///   or if too many attachments were requested.
     /// - [`Error::UnsupportedSampleCount`] if the requested MSAA sample count is not supported.
     /// - [`Error::Internal`] if an internal error occurs while creating the framebuffer.
     fn create_framebuffer(&self, layout: FramebufferLayout) -> Result<Self::Framebuffer, Error>;
@@ -215,6 +216,8 @@ pub struct Capabilities {
     pub framebuffer_size: u32,
     /// Maximum supported MSAA sample count for framebuffers, 0 if MSAA is not supported.
     pub framebuffer_msaa: u32,
+    /// Maximum supported number of color attachments for a framebuffer.
+    pub framebuffer_outputs: u32,
 
     /// Maximum supported width/height of a texture.
     pub texture_size: u32,
@@ -482,7 +485,7 @@ mod framebuffer {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum FramebufferAttachment {
         /// Color attachment
-        Color,
+        Color(u8),
         /// Depth attachment
         Depth,
         /// Stencil attachment
@@ -492,14 +495,14 @@ mod framebuffer {
     /// The layout of a framebuffer, used for creating a framebuffer with the desired
     /// specifications.
     #[derive(Debug, Clone, Copy)]
-    pub struct FramebufferLayout {
+    pub struct FramebufferLayout<'a> {
         /// The width of the framebuffer in pixels.
         pub width: u32,
         /// The height of the framebuffer in pixels.
         pub height: u32,
 
         /// The format of the color attachment, if any.
-        pub color: Option<TextureFormat>,
+        pub color: &'a [TextureFormat],
         /// The format of the depth attachment, if any.
         pub depth: Option<DepthFormat>,
         /// The format of the stencil attachment, if any.
@@ -511,7 +514,7 @@ mod framebuffer {
         /// Whether the framebuffer is expected to be used as a persistent render target (i.e.
         /// contents are preserved across frames and can be drawn to multiple times).
         pub is_persistent: bool,
-        /// Whether the color attachment is expected to be used as a texture that is sampled from.
+        /// Whether any color attachment is expected to be used as a texture that is sampled from.
         pub is_color_bindable: bool,
         /// Whether the depth attachment is expected to be used as a texture that is sampled from.
         pub is_depth_bindable: bool,
@@ -615,8 +618,8 @@ mod pipeline {
         /// The shader (vertex and fragment) used by this pipeline
         pub shader: Shader<'a>,
 
-        /// The format of the output color buffer
-        pub color_format: TextureFormat,
+        /// The color outputs of this pipeline.
+        pub color_outputs: &'a [TextureFormat],
 
         /// Blend mode used for color blending.
         ///
@@ -625,6 +628,11 @@ mod pipeline {
         /// compute the final color based on the source and destination colors, using the
         /// specified blend factors and operations for both color and alpha channels.
         pub color_blend: BlendMode,
+
+        /// A bitmask that determines which color channels are written to the framebuffer. The order
+        /// of the channels is RGBA, so for example, [true, true, true, false] means that
+        /// the RGB channels are written, but the alpha channel is not.
+        pub color_mask: [bool; 4],
 
         /// Depth test function.
         ///
@@ -763,7 +771,7 @@ mod pipeline {
     /// Blend mode, which determines how the source and destination colors are blended together
     ///
     /// The blend formula is:
-    /// ```
+    /// ```ignore
     /// result = (src_value * src_factor) <color_op> (dst_value * dst_factor)
     /// ```
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -858,7 +866,7 @@ mod pipeline {
 }
 
 mod draw {
-    use crate::{Context, FramebufferAttachment, TextureBounds};
+    use crate::*;
 
     /// A request to the backend to clear a region of a framebuffer with the specified clear
     /// parameters.
@@ -879,11 +887,12 @@ mod draw {
     /// A request to the backend to draw a batch of primitives.
     #[derive(Debug, Clone, Copy)]
     pub struct DrawRequest<'a, C: Context> {
+        /// The pipeline to use for this draw call.
+        pub pipeline: &'a C::Pipeline,
+
         /// The framebuffer to draw onto.
         pub target: &'a C::Framebuffer,
 
-        /// The graphics pipeline to use for drawing.
-        pub pipeline: &'a C::Pipeline,
         /// The resources to bind to the pipeline for this draw call. The binding order is
         /// determined by the specificed pipeline layout and shader data.
         pub bindings: &'a [BindingData<'a, C>],
@@ -926,9 +935,9 @@ mod draw {
             /// The buffer to bind.
             buffer: &'a C::Buffer,
             /// The start of the bound region.
-            offset: u32,
+            offset: u64,
             /// The size of the bound region in bytes.
-            size: u32,
+            size: u64,
         },
     }
 }

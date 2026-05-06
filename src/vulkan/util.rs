@@ -9,6 +9,7 @@ pub fn texture_format(format: TextureFormat) -> vk::Format {
         TextureFormat::R8S => vk::Format::R8_SNORM,
         TextureFormat::R16S => vk::Format::R16_SNORM,
         TextureFormat::R32F => vk::Format::R32_SFLOAT,
+        TextureFormat::RG32F => vk::Format::R32G32_SFLOAT,
     }
 }
 
@@ -24,6 +25,7 @@ pub fn texture_wrap(wrap: TextureWrap) -> vk::SamplerAddressMode {
         TextureWrap::Repeat => vk::SamplerAddressMode::REPEAT,
         TextureWrap::Mirror => vk::SamplerAddressMode::MIRRORED_REPEAT,
         TextureWrap::Clamp => vk::SamplerAddressMode::CLAMP_TO_EDGE,
+        TextureWrap::Border => vk::SamplerAddressMode::CLAMP_TO_BORDER,
     }
 }
 

@@ -18,7 +18,7 @@ use core::{
     fmt::Debug,
     time::Duration,
 };
-use glow::HasContext;
+use glow::{COLOR_ATTACHMENT0, HasContext};
 use util::*;
 
 pub use surface::{Surface, SurfaceError};
@@ -60,6 +60,7 @@ pub struct Pipeline<'a> {
 
     topology: PrimitiveTopology,
     color_blend: BlendMode,
+    color_mask: [bool; 4],
     depth_test: CompareFn,
     depth_write: bool,
     stencil_ccw: StencilFace,
@@ -84,10 +85,8 @@ pub struct Framebuffer<'a> {
     context: Context<'a>,
     framebuffer: Option<glow::Framebuffer>,
 
-    color_texture: Option<glow::Texture>,
-    depth_texture: Option<glow::Texture>,
-    color_buffer: Option<glow::Renderbuffer>,
-    depth_buffer: Option<glow::Renderbuffer>,
+    color: Vec<FramebufferStorage>,
+    depth: Option<FramebufferStorage>,
 }
 
 /// An OpenGL profiler object.
@@ -195,10 +194,8 @@ impl<'a> Context<'a> {
         Framebuffer {
             context: self.clone(),
             framebuffer: None,
-            color_texture: None,
-            depth_texture: None,
-            color_buffer: None,
-            depth_buffer: None,
+            color: Vec::new(),
+            depth: None,
         }
     }
 }
@@ -221,6 +218,7 @@ impl<'a> crate::Context for Context<'a> {
             texture_bindings: thread.features.max_texture_image_units,
             framebuffer_size: thread.features.max_framebuffer_size,
             framebuffer_msaa: thread.features.max_framebuffer_msaa,
+            framebuffer_outputs: thread.features.max_framebuffer_outputs,
             uniform_buffer_size: thread.features.max_uniform_buffer_size as u64,
             storage_buffer_size: thread.features.max_storage_buffer_size,
             uniform_buffer_alignment: thread.features.uniform_buffer_offset_alignment,
@@ -360,7 +358,6 @@ impl<'a> crate::Context for Context<'a> {
 
             let [vertex, fragment] = [false, true].map(|is_fragment| {
                 let source = if is_fragment { shader.fragment } else { shader.vertex };
-
                 let shader = DisposeOnDrop::new(
                     thread
                         .gl
@@ -411,8 +408,9 @@ impl<'a> crate::Context for Context<'a> {
                 program: program.take(),
                 vertex_array: vertex_array.take(),
                 bindings,
-                topology: layout.topology,
                 color_blend: layout.color_blend,
+                color_mask: layout.color_mask,
+                topology: layout.topology,
                 depth_test: layout.depth_test,
                 depth_write: layout.depth_write,
                 stencil_ccw: layout.stencil_ccw,
@@ -433,183 +431,68 @@ impl<'a> crate::Context for Context<'a> {
                 return Err(Error::UnsupportedSampleCount);
             }
 
+            if layout.color.len() > thread.features.max_framebuffer_outputs as usize {
+                return Err(Error::UnsupportedFormat);
+            }
+
             let framebuffer = DisposeOnDrop::new(thread.gl.create_framebuffer().map_err(Error::Internal)?, |obj| {
                 thread.gl.delete_framebuffer(obj)
             });
 
             thread.gl.bind_framebuffer(glow::FRAMEBUFFER, Some(*framebuffer));
 
-            let (color_texture, color_buffer) = if let Some(format) = layout.color {
-                let (format, data_type, internal_format) = color_format(format);
+            let color = layout
+                .color
+                .iter()
+                .enumerate()
+                .map(|(index, format)| {
+                    let (format, data_type, internal_format) = color_format(*format);
+                    let storage = FramebufferStorage::create(
+                        &thread.gl,
+                        COLOR_ATTACHMENT0 + index as u32,
+                        format,
+                        data_type,
+                        internal_format,
+                        layout.width,
+                        layout.height,
+                        layout.msaa_samples,
+                        layout.is_color_bindable,
+                    )?;
 
-                if layout.is_color_bindable {
-                    let texture = DisposeOnDrop::new(thread.gl.create_texture().map_err(Error::Internal)?, |obj| {
-                        thread.gl.delete_texture(obj)
-                    });
+                    Ok(DisposeOnDrop::new(storage, |obj| obj.delete(&thread.gl)))
+                })
+                .collect::<Result<Vec<_>, Error>>()?;
 
-                    thread.gl.bind_texture(glow::TEXTURE_2D, Some(*texture));
+            let depth = if let Some((format, attachment)) = depth_stencil_format(layout.depth, layout.stencil) {
+                let storage = FramebufferStorage::create(
+                    &thread.gl,
+                    attachment,
+                    format,
+                    glow::FLOAT,
+                    glow::DEPTH_COMPONENT32F,
+                    layout.width,
+                    layout.height,
+                    layout.msaa_samples,
+                    layout.is_color_bindable,
+                )?;
 
-                    if layout.msaa_samples > 0 {
-                        thread.gl.tex_image_2d_multisample(
-                            glow::TEXTURE_2D,
-                            layout.msaa_samples as i32,
-                            internal_format as i32,
-                            layout.width as i32,
-                            layout.height as i32,
-                            false,
-                        );
-                    } else {
-                        thread.gl.tex_image_2d(
-                            glow::TEXTURE_2D,
-                            0,
-                            internal_format as i32,
-                            layout.width as i32,
-                            layout.height as i32,
-                            0,
-                            format,
-                            data_type,
-                            glow::PixelUnpackData::Slice(None),
-                        );
-                    }
-
-                    thread
-                        .gl
-                        .tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::NEAREST as i32);
-                    thread
-                        .gl
-                        .tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::NEAREST as i32);
-                    thread.gl.framebuffer_texture_2d(
-                        glow::FRAMEBUFFER,
-                        glow::COLOR_ATTACHMENT0,
-                        glow::TEXTURE_2D,
-                        Some(*texture),
-                        0,
-                    );
-
-                    (Some(texture), None)
-                } else {
-                    let buffer = DisposeOnDrop::new(thread.gl.create_renderbuffer().map_err(Error::Internal)?, |obj| {
-                        thread.gl.delete_renderbuffer(obj)
-                    });
-
-                    thread.gl.bind_renderbuffer(glow::RENDERBUFFER, Some(*buffer));
-
-                    if layout.msaa_samples > 0 {
-                        thread.gl.renderbuffer_storage_multisample(
-                            glow::RENDERBUFFER,
-                            layout.msaa_samples as i32,
-                            internal_format,
-                            layout.width as i32,
-                            layout.height as i32,
-                        );
-                    } else {
-                        thread.gl.renderbuffer_storage(
-                            glow::RENDERBUFFER,
-                            internal_format,
-                            layout.width as i32,
-                            layout.height as i32,
-                        );
-                    }
-
-                    thread.gl.framebuffer_renderbuffer(
-                        glow::FRAMEBUFFER,
-                        glow::COLOR_ATTACHMENT0,
-                        glow::RENDERBUFFER,
-                        Some(*buffer),
-                    );
-
-                    (None, Some(buffer))
-                }
+                Some(DisposeOnDrop::new(storage, |obj| obj.delete(&thread.gl)))
             } else {
-                (None, None)
+                None
             };
 
-            let (depth_texture, depth_buffer) = if let Some((format, attachment)) =
-                depth_stencil_format(layout.depth, layout.stencil)
-            {
-                if layout.is_depth_bindable {
-                    let texture = DisposeOnDrop::new(thread.gl.create_texture().map_err(Error::Internal)?, |obj| {
-                        thread.gl.delete_texture(obj)
-                    });
-
-                    thread.gl.bind_texture(glow::TEXTURE_2D, Some(*texture));
-
-                    if layout.msaa_samples > 0 {
-                        thread.gl.tex_image_2d_multisample(
-                            glow::TEXTURE_2D,
-                            layout.msaa_samples as i32,
-                            format as i32,
-                            layout.width as i32,
-                            layout.height as i32,
-                            false,
-                        );
-                    } else {
-                        thread.gl.tex_image_2d(
-                            glow::TEXTURE_2D,
-                            0,
-                            format as i32,
-                            layout.width as i32,
-                            layout.height as i32,
-                            0,
-                            glow::DEPTH_COMPONENT32F,
-                            glow::FLOAT,
-                            glow::PixelUnpackData::Slice(None),
-                        );
-                    }
-
-                    thread.gl.framebuffer_texture_2d(
-                        glow::FRAMEBUFFER,
-                        attachment,
-                        glow::TEXTURE_2D,
-                        Some(*texture),
-                        0,
-                    );
-
-                    (Some(texture), None)
-                } else {
-                    let buffer = DisposeOnDrop::new(thread.gl.create_renderbuffer().map_err(Error::Internal)?, |obj| {
-                        thread.gl.delete_renderbuffer(obj)
-                    });
-
-                    thread.gl.bind_renderbuffer(glow::RENDERBUFFER, Some(*buffer));
-
-                    if layout.msaa_samples > 0 {
-                        thread.gl.renderbuffer_storage_multisample(
-                            glow::RENDERBUFFER,
-                            layout.msaa_samples as i32,
-                            format,
-                            layout.width as i32,
-                            layout.height as i32,
-                        );
-                    } else {
-                        thread.gl.renderbuffer_storage(
-                            glow::RENDERBUFFER,
-                            format,
-                            layout.width as i32,
-                            layout.height as i32,
-                        );
-                    }
-
-                    thread.gl.framebuffer_renderbuffer(
-                        glow::FRAMEBUFFER,
-                        attachment,
-                        glow::RENDERBUFFER,
-                        Some(*buffer),
-                    );
-
-                    (None, Some(buffer))
-                }
-            } else {
-                (None, None)
-            };
+            if layout.color.len() > 1 {
+                let draw_buffers = (0..layout.color.len() as u32)
+                    .map(|i| glow::COLOR_ATTACHMENT0 + i)
+                    .collect::<Vec<_>>();
+                thread.gl.draw_buffers(&draw_buffers);
+            }
 
             Ok(Framebuffer {
                 context: self.clone(),
                 framebuffer: Some(framebuffer.take()),
-                color_texture: color_texture.map(|t| t.take()),
-                depth_texture: depth_texture.map(|t| t.take()),
-                color_buffer: color_buffer.map(|b| b.take()),
-                depth_buffer: depth_buffer.map(|b| b.take()),
+                color: color.into_iter().map(|storage| storage.take()).collect(),
+                depth: depth.map(|storage| storage.take()),
             })
         })
     }
@@ -696,7 +579,6 @@ impl<'a> crate::Context for Context<'a> {
                 .gl
                 .bind_buffer(glow::COPY_READ_BUFFER, Some(source_buffer.buffer));
             thread.gl.bind_buffer(glow::COPY_WRITE_BUFFER, Some(buffer.buffer));
-
             thread.gl.copy_buffer_sub_data(
                 glow::COPY_READ_BUFFER,
                 glow::COPY_WRITE_BUFFER,
@@ -763,7 +645,6 @@ impl<'a> crate::Context for Context<'a> {
             let (format, data_type, _) = color_format(format);
 
             thread.gl.bind_texture(glow::TEXTURE_2D, Some(texture.texture));
-
             thread.gl.tex_sub_image_2d(
                 glow::TEXTURE_2D,
                 0,
@@ -801,7 +682,6 @@ impl<'a> crate::Context for Context<'a> {
             let (format, data_type, _) = color_format(format);
 
             thread.gl.bind_framebuffer(glow::READ_FRAMEBUFFER, target.framebuffer);
-
             thread.gl.read_pixels(
                 bounds.x as i32,
                 bounds.y as i32,
@@ -976,14 +856,19 @@ impl<'a> crate::Context for Context<'a> {
                                 framebuffer,
                                 attachment,
                             }) => {
-                                if framebuffer.framebuffer == draw.target.framebuffer {
+                                if draw.target.framebuffer == framebuffer.framebuffer {
                                     return Err(Error::InvalidFramebuffer);
                                 }
 
                                 let texture = match attachment {
-                                    FramebufferAttachment::Color => framebuffer.color_texture,
-                                    FramebufferAttachment::Depth => framebuffer.depth_texture,
                                     FramebufferAttachment::Stencil => None,
+                                    FramebufferAttachment::Depth => {
+                                        framebuffer.depth.and_then(|storage| storage.texture())
+                                    }
+                                    FramebufferAttachment::Color(index) => framebuffer
+                                        .color
+                                        .get(*index as usize)
+                                        .and_then(|storage| storage.texture()),
                                 };
 
                                 match texture {
@@ -1069,20 +954,12 @@ impl Drop for Framebuffer<'_> {
                 thread.gl.delete_framebuffer(framebuffer);
             }
 
-            if let Some(texture) = self.color_texture {
-                thread.gl.delete_texture(texture);
+            if let Some(depth) = self.depth.take() {
+                depth.delete(&thread.gl);
             }
 
-            if let Some(texture) = self.depth_texture {
-                thread.gl.delete_texture(texture);
-            }
-
-            if let Some(renderbuffer) = self.color_buffer {
-                thread.gl.delete_renderbuffer(renderbuffer);
-            }
-
-            if let Some(renderbuffer) = self.depth_buffer {
-                thread.gl.delete_renderbuffer(renderbuffer);
+            for color in self.color.drain(..) {
+                color.delete(&thread.gl);
             }
 
             Ok(())

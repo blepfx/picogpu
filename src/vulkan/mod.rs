@@ -4,7 +4,7 @@
 mod util;
 
 use crate::*;
-use alloc::{ffi::CString, format};
+use alloc::{ffi::CString, format, string::ToString};
 use ash::vk;
 use util::*;
 
@@ -18,11 +18,6 @@ pub struct Backend {
 
     command_pool: vk::CommandPool,
     query_pool: vk::QueryPool,
-}
-
-pub struct Context<'a> {
-    backend: &'a Backend,
-    commands: vk::CommandBuffer,
 }
 
 #[derive(Debug)]
@@ -58,9 +53,9 @@ impl From<ash::LoadingError> for VulkanError {
     }
 }
 
-impl From<vk::Result> for VulkanError {
+impl From<vk::Result> for crate::Error {
     fn from(err: vk::Result) -> Self {
-        VulkanError::Error(err)
+        Error::Internal(err.to_string())
     }
 }
 
@@ -78,22 +73,7 @@ impl Backend {
     }
 }
 
-impl Context<'_> {
-    pub fn submit(self) -> Result<(), VulkanError> {
-        unsafe {
-            self.backend.device.end_command_buffer(self.commands)?;
-            self.backend
-                .device
-                .queue_submit(self.backend.queue, &[vk::SubmitInfo::default()], vk::Fence::null())?;
-            self.backend
-                .device
-                .free_command_buffers(self.backend.command_pool, &[self.commands]);
-            Ok(())
-        }
-    }
-}
-
-impl crate::Context for Context<'_> {
+impl crate::Context for Backend {
     type Buffer = Buffer;
     type Texture = Texture;
     type Pipeline = Pipeline;
@@ -103,7 +83,7 @@ impl crate::Context for Context<'_> {
     fn capabilities(&self) -> Capabilities {
         Capabilities {
             shader_format: ShaderFormat::SpirV,
-            supports_profiler: self.backend.device_limits.timestamp_period > 0.0,
+            supports_profiler: self.device_limits.timestamp_period > 0.0,
             ..todo!()
         }
     }
@@ -121,12 +101,12 @@ impl crate::Context for Context<'_> {
                     },
             );
 
-            let buffer = self.backend.device.create_buffer(&buffer_info, None).unwrap();
+            let buffer = self.device.create_buffer(&buffer_info, None).unwrap();
 
-            let memory_reqs = self.backend.device.get_buffer_memory_requirements(buffer);
+            let memory_reqs = self.device.get_buffer_memory_requirements(buffer);
             let memory_type = find_memorytype_index(
                 &memory_reqs,
-                &self.backend.device_memory_properties,
+                &self.device_memory_properties,
                 if layout.dynamic {
                     vk::MemoryPropertyFlags::HOST_VISIBLE
                 } else {
@@ -139,9 +119,8 @@ impl crate::Context for Context<'_> {
                 .allocation_size(memory_reqs.size)
                 .memory_type_index(memory_type);
 
-            let memory = self.backend.device.allocate_memory(&memory_info, None).unwrap();
-
-            self.backend.device.bind_buffer_memory(buffer, memory, 0).unwrap();
+            let memory = self.device.allocate_memory(&memory_info, None).unwrap();
+            self.device.bind_buffer_memory(buffer, memory, 0).unwrap();
 
             Ok(Buffer {
                 buffer,
@@ -173,8 +152,8 @@ impl crate::Context for Context<'_> {
                 .address_mode_u(texture_wrap(layout.wrap_x))
                 .address_mode_v(texture_wrap(layout.wrap_y));
 
-            let image = self.backend.device.create_image(&image_info, None).unwrap();
-            let sampler = self.backend.device.create_sampler(&sampler_info, None).unwrap();
+            let image = self.device.create_image(&image_info, None).unwrap();
+            let sampler = self.device.create_sampler(&sampler_info, None).unwrap();
 
             Ok(Texture { image, sampler })
         }
@@ -188,13 +167,11 @@ impl crate::Context for Context<'_> {
             };
 
             let vertex_module = self
-                .backend
                 .device
                 .create_shader_module(&vk::ShaderModuleCreateInfo::default().code(shader.vertex_module), None)
                 .unwrap();
 
             let fragment_module = self
-                .backend
                 .device
                 .create_shader_module(
                     &vk::ShaderModuleCreateInfo::default().code(shader.fragment_module),
@@ -302,7 +279,6 @@ impl crate::Context for Context<'_> {
                 .dynamic_state(&dynamic_state);
 
             let pipeline = self
-                .backend
                 .device
                 .create_graphics_pipelines(vk::PipelineCache::null(), &[pipeline_info], None)
                 .map_err(|(_, err)| Error::Internal(format!("Failed to create graphics pipeline: {:?}", err)))?[0];
@@ -319,34 +295,6 @@ impl crate::Context for Context<'_> {
         todo!()
     }
 
-    fn delete_buffer(&self, buffer: Self::Buffer) {
-        unsafe {
-            self.backend.device.free_memory(buffer.memory, None);
-            self.backend.device.destroy_buffer(buffer.buffer, None);
-        }
-    }
-
-    fn delete_texture(&self, texture: Self::Texture) {
-        unsafe {
-            self.backend.device.destroy_sampler(texture.sampler, None);
-            self.backend.device.destroy_image(texture.image, None);
-        }
-    }
-
-    fn delete_pipeline(&self, pipeline: Self::Pipeline) {
-        unsafe {
-            self.backend.device.destroy_pipeline(pipeline.pipeline, None);
-        }
-    }
-
-    fn delete_framebuffer(&self, framebuffer: Self::Framebuffer) {
-        todo!()
-    }
-
-    fn delete_profiler(&self, profiler: Self::Profiler) {
-        todo!()
-    }
-
     fn upload_texture(
         &self,
         texture: &Self::Texture,
@@ -354,20 +302,19 @@ impl crate::Context for Context<'_> {
         format: TextureFormat,
         data: &[u8],
     ) -> Result<(), Error> {
-        todo!()
+        
     }
 
     fn upload_buffer(&self, buffer: &Self::Buffer, offset: u64, data: &[u8]) -> Result<(), Error> {
         unsafe {
             if buffer.dynamic {
                 let mapped = self
-                    .backend
                     .device
                     .map_memory(buffer.memory, offset, data.len() as u64, vk::MemoryMapFlags::empty())
                     .unwrap();
 
                 core::ptr::copy_nonoverlapping(data.as_ptr(), mapped as *mut u8, data.len());
-                self.backend.device.unmap_memory(buffer.memory);
+                self.device.unmap_memory(buffer.memory);
             } else {
                 // TODO: staging buffer upload for non-dynamic buffers
             }
@@ -385,7 +332,7 @@ impl crate::Context for Context<'_> {
         size: u64,
     ) -> Result<(), Error> {
         unsafe {
-            self.backend.device.cmd_copy_buffer(
+            self.device.cmd_copy_buffer(
                 self.commands,
                 src_buffer.buffer,
                 dst_buffer.buffer,
@@ -428,6 +375,16 @@ impl crate::Context for Context<'_> {
 
     fn draw(&self, draw: DrawRequest<Self>) -> Result<(), Error> {
         todo!()
+    }
+
+    fn present(&self) -> Result<(), Error> {
+        unsafe {
+            self.device.end_command_buffer(self.commands)?;
+            self.device
+                .queue_submit(self.queue, &[vk::SubmitInfo::default()], vk::Fence::null())?;
+            self.device.free_command_buffers(self.command_pool, &[self.commands]);
+            Ok(())
+        }
     }
 }
 

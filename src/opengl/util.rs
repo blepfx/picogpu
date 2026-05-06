@@ -17,6 +17,7 @@ pub struct Features {
     pub max_texture_size: u32,
     pub max_framebuffer_size: u32,
     pub max_framebuffer_msaa: u32,
+    pub max_framebuffer_outputs: u32,
     pub max_uniform_buffer_size: u32,
     pub max_storage_buffer_size: u32,
     pub max_texture_image_units: u32,
@@ -29,25 +30,14 @@ pub struct Features {
 #[derive(Debug, Clone, Copy)]
 pub enum ProgramBinding {
     Unbound,
-    Buffer { index: u32, size: u32, role: BufferRole },
+    Buffer { index: u32, size: u64, role: BufferRole },
     Texture2D { index: u32 },
 }
 
-pub unsafe fn is_context_valid(loader: &mut dyn FnMut(&CStr) -> *const c_void) -> bool {
-    unsafe {
-        let gl_get_string = loader(c"glGetString");
-        if gl_get_string.addr() < 8 || gl_get_string.addr() == usize::MAX {
-            return false;
-        }
-
-        let gl_get_string: extern "system" fn(u32) -> *const i8 = core::mem::transmute(gl_get_string.addr());
-        let version_string = gl_get_string(glow::VERSION);
-        if version_string.addr() < 8 || version_string.addr() == usize::MAX {
-            return false;
-        }
-
-        true
-    }
+#[derive(Debug, Clone, Copy)]
+pub enum FramebufferStorage {
+    Texture { texture: glow::Texture },
+    Renderbuffer { renderbuffer: glow::Renderbuffer },
 }
 
 impl Features {
@@ -68,6 +58,8 @@ impl Features {
 
             let max_texture_size = gl.get_parameter_i32(glow::MAX_TEXTURE_SIZE) as u32;
             let max_renderbuffer_size = gl.get_parameter_i32(glow::MAX_RENDERBUFFER_SIZE) as u32;
+            let max_color_attachments = gl.get_parameter_i32(glow::MAX_COLOR_ATTACHMENTS) as u32;
+            let max_draw_buffers = gl.get_parameter_i32(glow::MAX_DRAW_BUFFERS) as u32;
 
             Features {
                 version: version.clone(),
@@ -81,6 +73,7 @@ impl Features {
                 max_texture_size,
                 max_texture_image_units: gl.get_parameter_i32(glow::MAX_TEXTURE_IMAGE_UNITS) as u32,
 
+                max_framebuffer_outputs: max_color_attachments.min(max_draw_buffers),
                 max_framebuffer_size: max_texture_size.min(max_renderbuffer_size),
                 max_framebuffer_msaa: if framebuffer_msaa {
                     gl.get_parameter_i32(glow::MAX_SAMPLES) as u32
@@ -171,6 +164,122 @@ impl Features {
     }
 }
 
+impl FramebufferStorage {
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        gl: &glow::Context,
+        attachment: u32,
+        format: u32,
+        data_type: u32,
+        internal_format: u32,
+        width: u32,
+        height: u32,
+        samples: u32,
+        bindable: bool,
+    ) -> Result<Self, Error> {
+        unsafe {
+            if bindable {
+                let texture = DisposeOnDrop::new(gl.create_texture().map_err(Error::Internal)?, |obj| {
+                    gl.delete_texture(obj)
+                });
+
+                gl.bind_texture(glow::TEXTURE_2D, Some(*texture));
+
+                if samples > 1 {
+                    gl.tex_image_2d_multisample(
+                        glow::TEXTURE_2D,
+                        samples as i32,
+                        internal_format as i32,
+                        width as i32,
+                        height as i32,
+                        false,
+                    );
+                } else {
+                    gl.tex_image_2d(
+                        glow::TEXTURE_2D,
+                        0,
+                        internal_format as i32,
+                        width as i32,
+                        height as i32,
+                        0,
+                        format,
+                        data_type,
+                        glow::PixelUnpackData::Slice(None),
+                    );
+                }
+
+                gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::LINEAR as i32);
+                gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::LINEAR as i32);
+                gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE as i32);
+                gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE as i32);
+
+                gl.framebuffer_texture_2d(glow::FRAMEBUFFER, attachment, glow::TEXTURE_2D, Some(*texture), 0);
+
+                Ok(FramebufferStorage::Texture {
+                    texture: texture.take(),
+                })
+            } else {
+                let buffer = DisposeOnDrop::new(gl.create_renderbuffer().map_err(Error::Internal)?, |obj| {
+                    gl.delete_renderbuffer(obj)
+                });
+
+                gl.bind_renderbuffer(glow::RENDERBUFFER, Some(*buffer));
+
+                if samples > 1 {
+                    gl.renderbuffer_storage_multisample(
+                        glow::RENDERBUFFER,
+                        samples as i32,
+                        internal_format,
+                        width as i32,
+                        height as i32,
+                    );
+                } else {
+                    gl.renderbuffer_storage(glow::RENDERBUFFER, internal_format, width as i32, height as i32);
+                }
+
+                gl.framebuffer_renderbuffer(glow::FRAMEBUFFER, attachment, glow::RENDERBUFFER, Some(*buffer));
+
+                Ok(FramebufferStorage::Renderbuffer {
+                    renderbuffer: buffer.take(),
+                })
+            }
+        }
+    }
+
+    pub fn texture(&self) -> Option<glow::Texture> {
+        match self {
+            FramebufferStorage::Texture { texture } => Some(*texture),
+            FramebufferStorage::Renderbuffer { .. } => None,
+        }
+    }
+
+    pub fn delete(&self, gl: &glow::Context) {
+        unsafe {
+            match self {
+                FramebufferStorage::Texture { texture } => gl.delete_texture(*texture),
+                FramebufferStorage::Renderbuffer { renderbuffer } => gl.delete_renderbuffer(*renderbuffer),
+            }
+        }
+    }
+}
+
+pub unsafe fn is_context_valid(loader: &mut dyn FnMut(&CStr) -> *const c_void) -> bool {
+    unsafe {
+        let gl_get_string = loader(c"glGetString");
+        if gl_get_string.addr() < 8 || gl_get_string.addr() == usize::MAX {
+            return false;
+        }
+
+        let gl_get_string: extern "system" fn(u32) -> *const i8 = core::mem::transmute(gl_get_string.addr());
+        let version_string = gl_get_string(glow::VERSION);
+        if version_string.addr() < 8 || version_string.addr() == usize::MAX {
+            return false;
+        }
+
+        true
+    }
+}
+
 pub unsafe fn prepare_pipeline_bindings(
     gl: &glow::Context,
     features: &Features,
@@ -200,7 +309,7 @@ pub unsafe fn prepare_pipeline_bindings(
                 uniform_index += 1;
 
                 let size =
-                    gl.get_active_uniform_block_parameter_i32(program, index, glow::UNIFORM_BLOCK_DATA_SIZE) as u32;
+                    gl.get_active_uniform_block_parameter_i32(program, index, glow::UNIFORM_BLOCK_DATA_SIZE) as u64;
 
                 return Ok(ProgramBinding::Buffer {
                     index,
@@ -223,7 +332,7 @@ pub unsafe fn prepare_pipeline_bindings(
 
                 return Ok(ProgramBinding::Buffer {
                     index,
-                    size: data.first().copied().unwrap_or(0) as u32,
+                    size: data.first().copied().unwrap_or(0) as u64,
                     role: BufferRole::Storage,
                 });
             }
@@ -256,6 +365,36 @@ pub unsafe fn apply_pipeline(gl: &glow::Context, pipeline: &super::Pipeline) {
     unsafe {
         gl.use_program(Some(pipeline.program));
         gl.bind_vertex_array(Some(pipeline.vertex_array));
+
+        // color blend
+        if pipeline.color_blend == BlendMode::OPAQUE {
+            gl.disable(glow::BLEND);
+        } else {
+            gl.enable(glow::BLEND);
+            gl.blend_func_separate(
+                blend_factor(pipeline.color_blend.color_src),
+                blend_factor(pipeline.color_blend.color_dst),
+                blend_factor(pipeline.color_blend.alpha_src),
+                blend_factor(pipeline.color_blend.alpha_dst),
+            );
+            gl.blend_equation_separate(
+                blend_equation(pipeline.color_blend.color_op),
+                blend_equation(pipeline.color_blend.alpha_op),
+            );
+        }
+
+        // color mask
+        let [r, g, b, a] = pipeline.color_mask;
+        gl.color_mask(r, g, b, a);
+
+        // depth
+        gl.depth_mask(pipeline.depth_write);
+        if pipeline.depth_test == CompareFn::Always {
+            gl.disable(glow::DEPTH_TEST);
+        } else {
+            gl.enable(glow::DEPTH_TEST);
+            gl.depth_func(compare_fn(pipeline.depth_test));
+        }
 
         // stencil
         if (pipeline.stencil_cw, pipeline.stencil_ccw) == Default::default() {
@@ -306,32 +445,6 @@ pub unsafe fn apply_pipeline(gl: &glow::Context, pipeline: &super::Pipeline) {
                 gl.cull_face(glow::FRONT);
             }
             (false, false) => gl.disable(glow::CULL_FACE),
-        }
-
-        // blend
-        if pipeline.color_blend == BlendMode::OPAQUE {
-            gl.disable(glow::BLEND);
-        } else {
-            gl.enable(glow::BLEND);
-            gl.blend_func_separate(
-                blend_factor(pipeline.color_blend.color_src),
-                blend_factor(pipeline.color_blend.color_dst),
-                blend_factor(pipeline.color_blend.alpha_src),
-                blend_factor(pipeline.color_blend.alpha_dst),
-            );
-            gl.blend_equation_separate(
-                blend_equation(pipeline.color_blend.color_op),
-                blend_equation(pipeline.color_blend.alpha_op),
-            );
-        }
-
-        // depth
-        gl.depth_mask(pipeline.depth_write);
-        if pipeline.depth_test == CompareFn::Always {
-            gl.disable(glow::DEPTH_TEST);
-        } else {
-            gl.enable(glow::DEPTH_TEST);
-            gl.depth_func(compare_fn(pipeline.depth_test));
         }
     }
 }
