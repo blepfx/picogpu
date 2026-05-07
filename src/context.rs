@@ -273,7 +273,7 @@ pub enum Error {
     /// The data provided for a resource update does not match the requested specification
     InvalidData,
     /// The binding provided does not match the pipeline description
-    InvalidBinding(usize),
+    InvalidBinding(usize, &'static str),
     /// Attempt to create a context with an invalid backend state (i.e. a non-current or
     /// non-existing OpenGL context)
     InvalidContext,
@@ -310,8 +310,8 @@ impl core::fmt::Display for Error {
             Error::InvalidBounds => write!(f, "invalid bounds for a resource update"),
             Error::InvalidData => write!(f, "data does not match the requested format"),
             Error::InvalidResource => write!(f, "resource does not belong to this context"),
-            Error::InvalidBinding(i) => {
-                write!(f, "binding does not match the pipeline (index {})", i)
+            Error::InvalidBinding(i, msg) => {
+                write!(f, "binding does not match the pipeline (index {}): {}", i, msg)
             }
             Error::InvalidFramebuffer => write!(f, "framebuffer already in use"),
             Error::Compile(CompileStage::Fragment, msg) => {

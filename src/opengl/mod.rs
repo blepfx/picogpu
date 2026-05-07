@@ -836,15 +836,23 @@ impl<'a> crate::Context for Context<'a> {
                     ProgramBinding::Buffer { index, size, role } => {
                         let (buffer, offset, data_size) = match draw.bindings.get(i) {
                             Some(BindingData::Buffer { buffer, offset, size }) => (buffer, offset, size),
-                            _ => return Err(Error::InvalidBinding(i)),
+                            _ => return Err(Error::InvalidBinding(i, "not a buffer")),
                         };
 
-                        if buffer.role != *role || *data_size < *size as u64 {
-                            return Err(Error::InvalidBinding(i));
+                        if buffer.role != *role {
+                            return Err(Error::InvalidBinding(i, "invalid role"));
+                        }
+
+                        if *data_size < *size as u64 {
+                            return Err(Error::InvalidBinding(i, "invalid size"));
                         }
 
                         if offset.saturating_add(*data_size) > buffer.capacity as u64 {
-                            return Err(Error::InvalidBinding(i));
+                            return Err(Error::InvalidBinding(i, "invalid offset"));
+                        }
+
+                        if offset.is_multiple_of(thread.features.buffer_alignment(buffer.role) as u64) {
+                            return Err(Error::InvalidBinding(i, "invalid alignment"));
                         }
 
                         thread.gl.bind_buffer(buffer_target(*role), Some(buffer.buffer));
@@ -881,12 +889,12 @@ impl<'a> crate::Context for Context<'a> {
 
                                 match texture {
                                     Some(texture) => texture,
-                                    None => return Err(Error::InvalidBinding(i)),
+                                    None => return Err(Error::InvalidBinding(i, "invalid attachment")),
                                 }
                             }
 
                             _ => {
-                                return Err(Error::InvalidBinding(i));
+                                return Err(Error::InvalidBinding(i, "not a texture"));
                             }
                         };
 
