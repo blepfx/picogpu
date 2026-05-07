@@ -851,7 +851,7 @@ impl<'a> crate::Context for Context<'a> {
                             return Err(Error::InvalidBinding(i, "invalid offset"));
                         }
 
-                        if offset.is_multiple_of(thread.features.buffer_alignment(buffer.role) as u64) {
+                        if !offset.is_multiple_of(thread.features.buffer_alignment(buffer.role) as u64) {
                             return Err(Error::InvalidBinding(i, "invalid alignment"));
                         }
 
