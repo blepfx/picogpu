@@ -52,6 +52,7 @@ impl Features {
                 || version.is_embedded && (version.major, version.minor) >= (3, 0)
                 || extensions.contains("GL_ARB_uniform_buffer_object");
             let storage_buffers = !version.is_embedded && (version.major, version.minor) >= (4, 3)
+                || version.is_embedded && (version.major, version.minor) >= (3, 1)
                 || extensions.contains("GL_ARB_shader_storage_buffer_object");
             let query_time_elapsed = !version.is_embedded && (version.major, version.minor) >= (3, 3)
                 || extensions.contains("GL_ARB_timer_query");
