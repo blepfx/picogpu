@@ -213,7 +213,6 @@ impl<'a> crate::Context for Context<'a> {
         Capabilities {
             shader_format: thread.features.glsl_version(),
             supports_profiler: thread.features.query_time_elapsed,
-            supports_instancing: thread.features.draw_instancing,
             texture_size: thread.features.max_texture_size,
             texture_bindings: thread.features.max_texture_image_units,
             framebuffer_size: thread.features.max_framebuffer_size,
@@ -794,12 +793,8 @@ impl<'a> crate::Context for Context<'a> {
 
     fn draw(&self, draw: DrawRequest<Self>) -> Result<(), Error> {
         self.with_current(|thread| unsafe {
-            if draw.vertices == 0 || draw.instances == 0 {
+            if draw.vertices == 0 {
                 return Ok(());
-            }
-
-            if draw.instances > 1 && !thread.features.draw_instancing {
-                return Err(Error::UnsupportedFeature);
             }
 
             if thread.last_framebuffer != Some(draw.target.framebuffer) {
@@ -919,13 +914,7 @@ impl<'a> crate::Context for Context<'a> {
                 PrimitiveTopology::TriangleFan => glow::TRIANGLE_FAN,
             };
 
-            if draw.instances > 1 {
-                thread
-                    .gl
-                    .draw_arrays_instanced(topology, 0, draw.vertices as i32, draw.instances as i32);
-            } else {
-                thread.gl.draw_arrays(topology, 0, draw.vertices as i32);
-            }
+            thread.gl.draw_arrays(topology, 0, draw.vertices as i32);
 
             Ok(())
         })

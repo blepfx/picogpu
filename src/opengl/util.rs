@@ -13,7 +13,6 @@ pub struct Features {
     pub storage_buffers: bool,
     pub query_time_elapsed: bool,
     pub invalidate_buffer_sub_data: bool,
-    pub draw_instancing: bool,
 
     pub max_texture_size: u32,
     pub max_framebuffer_size: u32,
@@ -74,10 +73,6 @@ impl Features {
 
                 invalidate_buffer_sub_data: !version.is_embedded && (version.major, version.minor) >= (4, 3)
                     || extensions.contains("GL_ARB_invalidate_subdata"),
-
-                draw_instancing: !version.is_embedded && (version.major, version.minor) >= (3, 1)
-                    || version.is_embedded && (version.major, version.minor) >= (3, 0)
-                    || extensions.contains("GL_ARB_draw_instanced"),
 
                 max_texture_size,
                 max_texture_image_units: gl.get_parameter_i32(glow::MAX_TEXTURE_IMAGE_UNITS) as u32,

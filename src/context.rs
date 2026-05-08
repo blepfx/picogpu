@@ -211,8 +211,6 @@ pub struct Capabilities {
     pub shader_format: ShaderFormat,
     /// Whether the backend supports creating and using [`Context::Profiler`] objects.
     pub supports_profiler: bool,
-    /// Whether the backend supports instanced drawing ([`DrawRequest::instances`] > 1).
-    pub supports_instancing: bool,
 
     /// Maximum supported width/height of a framebuffer
     pub framebuffer_size: u32,
@@ -1009,10 +1007,6 @@ mod draw {
 
         /// The number of vertices to dispatch.
         pub vertices: u32,
-
-        /// The number of instances to dispatch for instanced drawing. Set this to `1` for
-        /// non-instanced drawing, setting this to `0` will draw nothing.
-        pub instances: u32,
     }
 
     /// A resource binding for a draw call, which can be a texture, framebuffer, or a buffer region.
@@ -1093,7 +1087,6 @@ mod draw {
                 target,
                 bindings: &[],
                 vertices: 0,
-                instances: 1,
                 scissor: None,
                 viewport: TextureBounds {
                     x: 0,
@@ -1125,13 +1118,6 @@ mod draw {
         /// Sets the number of vertices to dispatch for this draw request.
         pub fn with_vertices(mut self, vertices: u32) -> Self {
             self.vertices = vertices;
-            self
-        }
-
-        /// Sets the number of instances to dispatch for this draw request. Set to `1` by default
-        /// (no instancing).
-        pub fn with_instances(mut self, instances: u32) -> Self {
-            self.instances = instances;
             self
         }
     }
