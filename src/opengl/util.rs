@@ -392,6 +392,24 @@ pub unsafe fn apply_pipeline(gl: &glow::Context, pipeline: &super::Pipeline) {
             gl.depth_func(compare_fn(pipeline.depth_test));
         }
 
+        // cull
+        gl.front_face(glow::CCW); // we always use ccw winding for front cases, the api only operates in terms of winding direction, not front/back
+        match (pipeline.cull_ccw, pipeline.cull_cw) {
+            (true, true) => {
+                gl.enable(glow::CULL_FACE);
+                gl.cull_face(glow::FRONT_AND_BACK);
+            }
+            (true, false) => {
+                gl.enable(glow::CULL_FACE);
+                gl.cull_face(glow::BACK);
+            }
+            (false, true) => {
+                gl.enable(glow::CULL_FACE);
+                gl.cull_face(glow::FRONT);
+            }
+            (false, false) => gl.disable(glow::CULL_FACE),
+        }
+
         // stencil
         if (pipeline.stencil_cw, pipeline.stencil_ccw) == Default::default() {
             gl.disable(glow::STENCIL_TEST);
@@ -423,24 +441,6 @@ pub unsafe fn apply_pipeline(gl: &glow::Context, pipeline: &super::Pipeline) {
                 stencil_op(pipeline.stencil_cw.depth_fail_op),
                 stencil_op(pipeline.stencil_cw.pass_op),
             );
-        }
-
-        // cull
-        gl.front_face(glow::CCW);
-        match (pipeline.cull_ccw, pipeline.cull_cw) {
-            (true, true) => {
-                gl.enable(glow::CULL_FACE);
-                gl.cull_face(glow::FRONT_AND_BACK);
-            }
-            (true, false) => {
-                gl.enable(glow::CULL_FACE);
-                gl.cull_face(glow::BACK);
-            }
-            (false, true) => {
-                gl.enable(glow::CULL_FACE);
-                gl.cull_face(glow::FRONT);
-            }
-            (false, false) => gl.disable(glow::CULL_FACE),
         }
     }
 }

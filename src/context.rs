@@ -7,6 +7,7 @@ pub use framebuffer::*;
 pub use pipeline::*;
 pub use shader::*;
 pub use texture::*;
+pub use vertex::*;
 
 /// The main interface for interacting with a backend, used for creating and managing resources
 /// (buffers, textures, pipelines, framebuffers, profilers) and issuing draw calls.
@@ -648,7 +649,7 @@ mod shader {
 }
 
 mod pipeline {
-    use crate::{Shader, TextureFormat};
+    use crate::*;
 
     /// The layout of a pipeline, used for creating a pipeline with the desired specifications.
     ///
@@ -705,6 +706,13 @@ mod pipeline {
         /// The primitive topology used for drawing, which determines how the vertex ordering is
         /// interpreted as primitives.
         pub topology: PrimitiveTopology,
+
+        /// A list of vertex streams, which determine how vertex input data is read and interpreted
+        /// by the vertex shader.
+        pub vertex_streams: &'a [VertexStream<'a>],
+
+        /// Format of the index buffer if present.
+        pub vertex_indices: Option<IndexFormat>,
     }
 
     /// A comparison function used for depth and stencil tests
@@ -850,37 +858,6 @@ mod pipeline {
         TriangleFan,
     }
 
-    #[derive(Debug, Clone, Default, PartialEq, Eq)]
-    pub struct VertexLayout<'a> {
-        pub attributes: &'a [(VertexAttribute, u32)],
-        pub stride: u32,
-    }
-
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub enum VertexAttribute {
-        F32x2,
-        F32x3,
-        F32x4,
-        I32x2,
-        I32x3,
-        I32x4,
-        U32x2,
-        U32x3,
-        U32x4,
-    }
-
-    /// The type of vertex indices used for indexed draw calls. This is used to determine the data
-    /// type of the index buffer and how to interpret the vertex indices when drawing.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub enum VertexIndex {
-        /// 8-bit unsigned integer indices.
-        U8,
-        /// 16-bit unsigned integer indices.
-        U16,
-        /// 32-bit unsigned integer indices.
-        U32,
-    }
-
     impl Default for StencilFace {
         fn default() -> Self {
             Self {
@@ -940,40 +917,11 @@ mod pipeline {
         };
     }
 
-    impl VertexAttribute {
-        /// Returns the size of this vertex attribute in bytes.
-        pub fn size(&self) -> u32 {
-            match self {
-                VertexAttribute::F32x2 => 8,
-                VertexAttribute::F32x3 => 12,
-                VertexAttribute::F32x4 => 16,
-                VertexAttribute::I32x2 => 8,
-                VertexAttribute::I32x3 => 12,
-                VertexAttribute::I32x4 => 16,
-                VertexAttribute::U32x2 => 8,
-                VertexAttribute::U32x3 => 12,
-                VertexAttribute::U32x4 => 16,
-            }
-        }
-    }
-
-    impl VertexIndex {
-        /// Returns the size of this vertex index type in bytes.
-        pub fn size(&self) -> u32 {
-            match self {
-                VertexIndex::U8 => 1,
-                VertexIndex::U16 => 2,
-                VertexIndex::U32 => 4,
-            }
-        }
-    }
-
     impl<'a> PipelineLayout<'a> {
         /// Creates a new pipeline layout.
         pub fn new(shader: Shader<'a>) -> Self {
             Self {
                 shader,
-                topology: PrimitiveTopology::TriangleList,
                 color_outputs: &[],
                 color_blend: BlendMode::OPAQUE,
                 depth_test: CompareFn::Always,
@@ -982,6 +930,9 @@ mod pipeline {
                 stencil_cw: StencilFace::default(),
                 cull_ccw: false,
                 cull_cw: false,
+                topology: PrimitiveTopology::TriangleList,
+                vertex_streams: &[],
+                vertex_indices: None,
             }
         }
 
@@ -1025,6 +976,120 @@ mod pipeline {
         pub fn with_topology(mut self, topology: PrimitiveTopology) -> Self {
             self.topology = topology;
             self
+        }
+
+        /// Sets the vertex streams for this pipeline, which determine how vertex input data is read
+        /// and interpreted by the vertex shader.
+        pub fn with_vertex_streams(mut self, vertex_streams: &'a [VertexStream<'a>]) -> Self {
+            self.vertex_streams = vertex_streams;
+            self
+        }
+
+        /// Sets the vertex index format for this pipeline. By default, no index buffer is used and
+        /// the vertices are streamed sequentially.
+        pub fn with_vertex_indices(mut self, vertex_indices: IndexFormat) -> Self {
+            self.vertex_indices = Some(vertex_indices);
+            self
+        }
+    }
+}
+
+mod vertex {
+    /// A single vertex data stream corresponding to a single vertex buffer binding.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct VertexStream<'a> {
+        /// Whether this vertex stream is instanced, i.e. whether the vertex data should be fetched
+        /// per instance rather than per vertex.
+        pub instanced: bool,
+
+        /// A list of attributes in the current vertex buffer.
+        pub attributes: &'a [VertexAttribute],
+
+        /// The stride in bytes between consecutive vertices in the buffer. See
+        /// [`VertexAttribute::offset`] for more info.
+        pub stride: u32,
+    }
+
+    /// A single vertex attribute, which describes how to fetch a specific attribute from a
+    /// buffer
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct VertexAttribute {
+        /// Attribute index, as defined in the shader.
+        pub index: u32,
+
+        /// Offset of this attribute from the buffer
+        ///
+        /// The attribute data for a vertex will be read from the buffer starting at
+        /// `vertex_index` * [`VertexFetch::stride`] + `offset`.
+        pub offset: u32,
+
+        /// The format of this vertex attribute, which determines how the vertex data is read from
+        /// the buffer and interpreted in the shader.
+        pub format: VertexFormat,
+    }
+
+    /// The format of a vertex attribute, which determines how the vertex data is read from the
+    /// buffer and interpreted in the shader.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum VertexFormat {
+        /// 32-bit float
+        F32x1,
+        /// 2D vector of 32-bit floats
+        F32x2,
+        /// 3D vector of 32-bit floats
+        F32x3,
+        /// 4D vector of 32-bit floats
+        F32x4,
+        /// 32-bit signed integer
+        I32x1,
+        /// 2D vector of 32-bit signed integers
+        I32x2,
+        /// 3D vector of 32-bit signed integers
+        I32x3,
+        /// 4D vector of 32-bit signed integers
+        I32x4,
+        /// 32-bit unsigned integer
+        U32x1,
+        /// 2D vector of 32-bit unsigned integers
+        U32x2,
+        /// 3D vector of 32-bit unsigned integers
+        U32x3,
+        /// 4D vector of 32-bit unsigned integers
+        U32x4,
+    }
+
+    /// The type of vertex indices used for indexed draw calls. This is used to determine the data
+    /// type of the index buffer and how to interpret the vertex indices when drawing.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum IndexFormat {
+        /// 8-bit unsigned integer indices.
+        U8,
+        /// 16-bit unsigned integer indices.
+        U16,
+        /// 32-bit unsigned integer indices.
+        U32,
+    }
+
+    impl VertexFormat {
+        /// Returns the size of this vertex attribute in bytes.
+        pub fn size(&self) -> u32 {
+            match self {
+                VertexFormat::F32x1 | VertexFormat::I32x1 | VertexFormat::U32x1 => 4,
+                VertexFormat::F32x2 | VertexFormat::I32x2 | VertexFormat::U32x2 => 8,
+                VertexFormat::F32x3 | VertexFormat::I32x3 | VertexFormat::U32x3 => 12,
+                VertexFormat::F32x4 | VertexFormat::I32x4 | VertexFormat::U32x4 => 16,
+            }
+        }
+    }
+
+    impl IndexFormat {
+        /// Returns the size of this index type in bytes.
+        pub fn size(&self) -> u32 {
+            match self {
+                IndexFormat::U8 => 1,
+                IndexFormat::U16 => 2,
+                IndexFormat::U32 => 4,
+            }
         }
     }
 }
@@ -1070,6 +1135,10 @@ mod draw {
 
         /// The number of vertices to dispatch.
         pub vertices: u32,
+
+        /// The number of instances to dispatch for instanced drawing. Set this to `1` for
+        /// non-instanced drawing, setting this to `0` will draw nothing.
+        pub instances: u32,
     }
 
     /// A resource binding for a draw call, which can be a texture, framebuffer, or a buffer region.
@@ -1150,6 +1219,7 @@ mod draw {
                 target,
                 bindings: &[],
                 vertices: 0,
+                instances: 1,
                 scissor: None,
                 viewport: TextureBounds {
                     x: 0,
@@ -1181,6 +1251,13 @@ mod draw {
         /// Sets the number of vertices to dispatch for this draw request.
         pub fn with_vertices(mut self, vertices: u32) -> Self {
             self.vertices = vertices;
+            self
+        }
+
+        /// Sets the number of instances to dispatch for this draw request. Set to `1` by default
+        /// (no instancing).
+        pub fn with_instances(mut self, instances: u32) -> Self {
+            self.instances = instances;
             self
         }
     }

@@ -355,10 +355,6 @@ impl<'a> crate::Context for Context<'a> {
                 thread.gl.delete_program(obj)
             });
 
-            let vertex_array = DisposeOnDrop::new(thread.gl.create_vertex_array().map_err(Error::Internal)?, |obj| {
-                thread.gl.delete_vertex_array(obj)
-            });
-
             let [vertex, fragment] = [false, true].map(|is_fragment| {
                 let source = if is_fragment { shader.fragment } else { shader.vertex };
                 let shader = DisposeOnDrop::new(
@@ -405,6 +401,14 @@ impl<'a> crate::Context for Context<'a> {
             thread.gl.detach_shader(*program, *fragment);
 
             let bindings = prepare_pipeline_bindings(&thread.gl, &thread.features, *program, shader.bindings)?;
+
+            let vertex_array = DisposeOnDrop::new(thread.gl.create_vertex_array().map_err(Error::Internal)?, |obj| {
+                thread.gl.delete_vertex_array(obj)
+            });
+
+            thread.gl.bind_vertex_array(Some(*vertex_array));
+
+            for stream in layout.vertex_streams {}
 
             Ok(Pipeline {
                 context: self.clone(),
