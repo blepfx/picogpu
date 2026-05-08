@@ -13,6 +13,7 @@ pub struct Features {
     pub storage_buffers: bool,
     pub query_time_elapsed: bool,
     pub invalidate_buffer_sub_data: bool,
+    pub draw_instancing: bool,
 
     pub max_texture_size: u32,
     pub max_framebuffer_size: u32,
@@ -41,11 +42,13 @@ pub enum FramebufferStorage {
 }
 
 impl Features {
-    pub unsafe fn from_context(gl: &glow::Context) -> Self {
+    pub unsafe fn from_context(gl: &glow::Context) -> Option<Self> {
         unsafe {
             let version = gl.version();
             let extensions = gl.supported_extensions();
 
+            let baseline_support = !version.is_embedded && (version.major, version.minor) >= (3, 0)
+                || version.is_embedded && (version.major, version.minor) >= (2, 0);
             let uniform_buffers = !version.is_embedded && (version.major, version.minor) >= (3, 1)
                 || version.is_embedded && (version.major, version.minor) >= (3, 0)
                 || extensions.contains("GL_ARB_uniform_buffer_object");
@@ -53,15 +56,17 @@ impl Features {
                 || extensions.contains("GL_ARB_shader_storage_buffer_object");
             let query_time_elapsed = !version.is_embedded && (version.major, version.minor) >= (3, 3)
                 || extensions.contains("GL_ARB_timer_query");
-            let framebuffer_msaa =
-                (version.major, version.minor) >= (3, 0) || extensions.contains("GL_EXT_framebuffer_multisample");
 
             let max_texture_size = gl.get_parameter_i32(glow::MAX_TEXTURE_SIZE) as u32;
             let max_renderbuffer_size = gl.get_parameter_i32(glow::MAX_RENDERBUFFER_SIZE) as u32;
             let max_color_attachments = gl.get_parameter_i32(glow::MAX_COLOR_ATTACHMENTS) as u32;
             let max_draw_buffers = gl.get_parameter_i32(glow::MAX_DRAW_BUFFERS) as u32;
 
-            Features {
+            if !baseline_support {
+                return None;
+            }
+
+            Some(Features {
                 version: version.clone(),
                 uniform_buffers,
                 storage_buffers,
@@ -70,16 +75,16 @@ impl Features {
                 invalidate_buffer_sub_data: !version.is_embedded && (version.major, version.minor) >= (4, 3)
                     || extensions.contains("GL_ARB_invalidate_subdata"),
 
+                draw_instancing: !version.is_embedded && (version.major, version.minor) >= (3, 1)
+                    || version.is_embedded && (version.major, version.minor) >= (3, 0)
+                    || extensions.contains("GL_ARB_draw_instanced"),
+
                 max_texture_size,
                 max_texture_image_units: gl.get_parameter_i32(glow::MAX_TEXTURE_IMAGE_UNITS) as u32,
 
                 max_framebuffer_outputs: max_color_attachments.min(max_draw_buffers),
                 max_framebuffer_size: max_texture_size.min(max_renderbuffer_size),
-                max_framebuffer_msaa: if framebuffer_msaa {
-                    gl.get_parameter_i32(glow::MAX_SAMPLES) as u32
-                } else {
-                    0
-                },
+                max_framebuffer_msaa: gl.get_parameter_i32(glow::MAX_SAMPLES) as u32,
 
                 max_uniform_buffer_size: if uniform_buffers {
                     gl.get_parameter_i32(glow::MAX_UNIFORM_BLOCK_SIZE) as u32
@@ -120,7 +125,7 @@ impl Features {
                 } else {
                     0
                 },
-            }
+            })
         }
     }
 
@@ -128,7 +133,6 @@ impl Features {
         match role {
             BufferRole::Uniform => self.max_uniform_buffer_size,
             BufferRole::Storage => self.max_storage_buffer_size,
-            BufferRole::Vertex | BufferRole::Index => 0,
         }
     }
 
@@ -136,7 +140,6 @@ impl Features {
         match role {
             BufferRole::Uniform => self.uniform_buffer_offset_alignment,
             BufferRole::Storage => self.storage_buffer_offset_alignment,
-            BufferRole::Vertex | BufferRole::Index => 1,
         }
     }
 
@@ -525,8 +528,6 @@ pub fn buffer_target(role: BufferRole) -> u32 {
     match role {
         BufferRole::Uniform => glow::UNIFORM_BUFFER,
         BufferRole::Storage => glow::SHADER_STORAGE_BUFFER,
-        BufferRole::Vertex => glow::ARRAY_BUFFER,
-        BufferRole::Index => glow::ELEMENT_ARRAY_BUFFER,
     }
 }
 
