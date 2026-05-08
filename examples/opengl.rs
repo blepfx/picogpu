@@ -37,16 +37,11 @@ fn main() {
 
         let texture = {
             let texture = context
-                .create_texture(TextureLayout {
-                    width: 8,
-                    height: 8,
-                    format: TextureFormat::RGBA8,
-                    filter_mag: TextureFilter::Linear,
-                    filter_min: TextureFilter::Linear,
-                    wrap_x: TextureWrap::Repeat,
-                    wrap_y: TextureWrap::Repeat,
-                    wrap_border: TextureBorder::White,
-                })
+                .create_texture(
+                    TextureLayout::new(8, 8, TextureFormat::RGBA8)
+                        .with_filter(TextureFilter::Linear, TextureFilter::Linear)
+                        .with_wrap(TextureWrap::Repeat, TextureWrap::Repeat),
+                )
                 .unwrap();
 
             let mut data = vec![255u8; 8 * 8 * 4];
@@ -86,10 +81,8 @@ fn main() {
         }
 
         let pipeline = {
-            context
-                .create_pipeline(PipelineLayout {
-                    shader: ShaderGlsl {
-                        vertex: r#"
+            let shader = ShaderGlsl {
+                vertex: r#"
                             #version 330
 
                             void main() {
@@ -107,7 +100,7 @@ fn main() {
                                 gl_Position = vec4(position, 0.0, 1.0);
                             }
                         "#,
-                        fragment: r#"
+                fragment: r#"
                             #version 330
 
                             uniform sampler2D Texture;
@@ -121,20 +114,15 @@ fn main() {
                                 gl_FragColor = texture * color;
                             }
                         "#,
-                        bindings: &["Uniforms", "Texture"],
-                    }
-                    .into(),
-                    topology: PrimitiveTopology::TriangleList,
-                    color_outputs: &[TextureFormat::RGBA8],
-                    color_mask: ColorMask::ALL,
-                    color_blend: BlendMode::ALPHA,
-                    depth_test: CompareFn::Always,
-                    depth_write: false,
-                    stencil_ccw: StencilFace::default(),
-                    stencil_cw: StencilFace::default(),
-                    cull_ccw: false,
-                    cull_cw: false,
-                })
+                bindings: &["Uniforms", "Texture"],
+            };
+
+            context
+                .create_pipeline(
+                    PipelineLayout::new(shader.into())
+                        .with_color_outputs(&[TextureFormat::RGBA8])
+                        .with_color_blend(BlendMode::ALPHA),
+                )
                 .unwrap()
         };
 
@@ -154,13 +142,11 @@ fn main() {
                 context.begin_profiler(&profiler_1).unwrap();
 
                 context
-                    .clear(ClearRequest {
-                        target: &context.screen(),
-                        color: Some([0.1, 0.1, 0.1, 1.0]),
-                        depth: Some(1.0),
-                        stencil: None,
-                        scissor: None,
-                    })
+                    .clear(
+                        ClearRequest::new(&context.screen())
+                            .with_color([0.1, 0.1, 0.1, 1.0])
+                            .with_depth(1.0),
+                    )
                     .unwrap();
 
                 for i in 0..100 {
@@ -179,29 +165,24 @@ fn main() {
                     }
 
                     context
-                        .draw(DrawRequest {
-                            target: &context.screen(),
-                            pipeline: &pipeline,
-
-                            viewport: TextureBounds {
-                                x: 0,
-                                y: 0,
-                                width,
-                                height,
-                            },
-
-                            scissor: None,
-                            vertices: 2 * 3,
-
-                            bindings: &[
-                                BindingData::Buffer {
-                                    buffer: &buffer,
-                                    offset: 0,
-                                    size: 32,
-                                },
-                                BindingData::Texture { texture: &texture },
-                            ],
-                        })
+                        .draw(
+                            DrawRequest::new(&context.screen(), &pipeline)
+                                .with_vertices(2 * 3)
+                                .with_viewport(TextureBounds {
+                                    x: 0,
+                                    y: 0,
+                                    width,
+                                    height,
+                                })
+                                .with_bindings(&[
+                                    BindingData::Buffer {
+                                        buffer: &buffer,
+                                        offset: 0,
+                                        size: 32,
+                                    },
+                                    BindingData::Texture { texture: &texture },
+                                ]),
+                        )
                         .unwrap();
                 }
 

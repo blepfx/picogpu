@@ -59,7 +59,6 @@ pub struct Pipeline<'a> {
     bindings: Vec<ProgramBinding>,
 
     color_blend: BlendMode,
-    color_mask: ColorMask,
     depth_test: CompareFn,
     depth_write: bool,
     stencil_ccw: StencilFace,
@@ -413,7 +412,6 @@ impl<'a> crate::Context for Context<'a> {
                 vertex_array: vertex_array.take(),
                 bindings,
                 color_blend: layout.color_blend,
-                color_mask: layout.color_mask,
                 topology: layout.topology,
                 depth_test: layout.depth_test,
                 depth_write: layout.depth_write,

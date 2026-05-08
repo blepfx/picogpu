@@ -383,14 +383,6 @@ pub unsafe fn apply_pipeline(gl: &glow::Context, pipeline: &super::Pipeline) {
             );
         }
 
-        // color mask
-        gl.color_mask(
-            pipeline.color_mask.red,
-            pipeline.color_mask.green,
-            pipeline.color_mask.blue,
-            pipeline.color_mask.alpha,
-        );
-
         // depth
         gl.depth_mask(pipeline.depth_write);
         if pipeline.depth_test == CompareFn::Always {

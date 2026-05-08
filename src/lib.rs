@@ -6,8 +6,8 @@
 extern crate alloc;
 
 mod context;
-#[cfg(feature = "metal")]
-pub mod metal;
+// #[cfg(feature = "metal")]
+// pub mod metal;
 #[cfg(feature = "opengl")]
 pub mod opengl;
 // #[cfg(feature = "vulkan")]

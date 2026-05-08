@@ -472,6 +472,44 @@ mod texture {
             }
         }
     }
+
+    impl TextureLayout {
+        /// Creates a new texture layout with the given width, height, and format, and default
+        /// sampling parameters (nearest filtering, border wrapping with transparent border color).
+        pub fn new(width: u32, height: u32, format: TextureFormat) -> Self {
+            Self {
+                width,
+                height,
+                format,
+                filter_min: TextureFilter::Nearest,
+                filter_mag: TextureFilter::Nearest,
+                wrap_x: TextureWrap::Border,
+                wrap_y: TextureWrap::Border,
+                wrap_border: TextureBorder::Transparent,
+            }
+        }
+
+        /// Sets the filtering mode for the texture.
+        pub fn with_filter(mut self, filter_min: TextureFilter, filter_mag: TextureFilter) -> Self {
+            self.filter_min = filter_min;
+            self.filter_mag = filter_mag;
+            self
+        }
+
+        /// Sets the wrapping mode for the texture.
+        pub fn with_wrap(mut self, wrap_x: TextureWrap, wrap_y: TextureWrap) -> Self {
+            self.wrap_x = wrap_x;
+            self.wrap_y = wrap_y;
+            self
+        }
+
+        /// Sets the border color for the texture, used when the wrapping mode is set to
+        /// [`TextureWrap::Border`].
+        pub fn with_border(mut self, wrap_border: TextureBorder) -> Self {
+            self.wrap_border = wrap_border;
+            self
+        }
+    }
 }
 
 mod framebuffer {
@@ -641,11 +679,6 @@ mod pipeline {
         /// specified blend factors and operations for both color and alpha channels.
         pub color_blend: BlendMode,
 
-        /// A bitmask that determines which color channels are written to the framebuffer. The order
-        /// of the channels is RGBA, so for example, [true, true, true, false] means that
-        /// the RGB channels are written, but the alpha channel is not.
-        pub color_mask: ColorMask,
-
         /// Depth test function.
         ///
         /// This is used to determine whether a fragment should be discarded based on its depth
@@ -672,29 +705,6 @@ mod pipeline {
         /// The primitive topology used for drawing, which determines how the vertex ordering is
         /// interpreted as primitives.
         pub topology: PrimitiveTopology,
-    }
-
-    /// A bitmask that determines which color channels are written to the framebuffer.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub struct ColorMask {
-        /// If `true`, the red channel is written
-        pub red: bool,
-        /// If `true`, the green channel is written
-        pub green: bool,
-        /// If `true`, the blue channel is written
-        pub blue: bool,
-        /// If `true`, the alpha channel is written
-        pub alpha: bool,
-    }
-
-    impl ColorMask {
-        /// A color mask that enables writing to all channels (RGBA).
-        pub const ALL: Self = Self {
-            red: true,
-            green: true,
-            blue: true,
-            alpha: true,
-        };
     }
 
     /// A comparison function used for depth and stencil tests
@@ -840,6 +850,50 @@ mod pipeline {
         TriangleFan,
     }
 
+    #[derive(Debug, Clone, Default, PartialEq, Eq)]
+    pub struct VertexLayout<'a> {
+        pub attributes: &'a [(VertexAttribute, u32)],
+        pub stride: u32,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum VertexAttribute {
+        F32x2,
+        F32x3,
+        F32x4,
+        I32x2,
+        I32x3,
+        I32x4,
+        U32x2,
+        U32x3,
+        U32x4,
+    }
+
+    /// The type of vertex indices used for indexed draw calls. This is used to determine the data
+    /// type of the index buffer and how to interpret the vertex indices when drawing.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum VertexIndex {
+        /// 8-bit unsigned integer indices.
+        U8,
+        /// 16-bit unsigned integer indices.
+        U16,
+        /// 32-bit unsigned integer indices.
+        U32,
+    }
+
+    impl Default for StencilFace {
+        fn default() -> Self {
+            Self {
+                mask: 0x0,
+                reference: 0,
+                compare: CompareFn::Always,
+                pass_op: StencilOp::Keep,
+                fail_op: StencilOp::Keep,
+                depth_fail_op: StencilOp::Keep,
+            }
+        }
+    }
+
     impl BlendMode {
         /// Opaque blending mode (overwrite)
         pub const OPAQUE: Self = Self {
@@ -886,16 +940,91 @@ mod pipeline {
         };
     }
 
-    impl Default for StencilFace {
-        fn default() -> Self {
-            Self {
-                mask: 0x0,
-                reference: 0,
-                compare: CompareFn::Always,
-                pass_op: StencilOp::Keep,
-                fail_op: StencilOp::Keep,
-                depth_fail_op: StencilOp::Keep,
+    impl VertexAttribute {
+        /// Returns the size of this vertex attribute in bytes.
+        pub fn size(&self) -> u32 {
+            match self {
+                VertexAttribute::F32x2 => 8,
+                VertexAttribute::F32x3 => 12,
+                VertexAttribute::F32x4 => 16,
+                VertexAttribute::I32x2 => 8,
+                VertexAttribute::I32x3 => 12,
+                VertexAttribute::I32x4 => 16,
+                VertexAttribute::U32x2 => 8,
+                VertexAttribute::U32x3 => 12,
+                VertexAttribute::U32x4 => 16,
             }
+        }
+    }
+
+    impl VertexIndex {
+        /// Returns the size of this vertex index type in bytes.
+        pub fn size(&self) -> u32 {
+            match self {
+                VertexIndex::U8 => 1,
+                VertexIndex::U16 => 2,
+                VertexIndex::U32 => 4,
+            }
+        }
+    }
+
+    impl<'a> PipelineLayout<'a> {
+        /// Creates a new pipeline layout.
+        pub fn new(shader: Shader<'a>) -> Self {
+            Self {
+                shader,
+                topology: PrimitiveTopology::TriangleList,
+                color_outputs: &[],
+                color_blend: BlendMode::OPAQUE,
+                depth_test: CompareFn::Always,
+                depth_write: false,
+                stencil_ccw: StencilFace::default(),
+                stencil_cw: StencilFace::default(),
+                cull_ccw: false,
+                cull_cw: false,
+            }
+        }
+
+        /// Sets the color output formats for this pipeline.
+        pub fn with_color_outputs(mut self, color_outputs: &'a [TextureFormat]) -> Self {
+            self.color_outputs = color_outputs;
+            self
+        }
+
+        /// Sets the color blending mode for this pipeline. By default, no blending is performed.
+        pub fn with_color_blend(mut self, blend: BlendMode) -> Self {
+            self.color_blend = blend;
+            self
+        }
+
+        /// Sets the depth test & write mask for this pipeline. By default, depth testing is
+        /// disabled and depth writing is disabled as well.
+        pub fn with_depth(mut self, compare: CompareFn, write: bool) -> Self {
+            self.depth_test = compare;
+            self.depth_write = write;
+            self
+        }
+
+        /// Sets the stencil test and operations for this pipeline. By default, stencil
+        /// testing is disabled.
+        pub fn with_stencil(mut self, stencil_cw: StencilFace, stencil_ccw: StencilFace) -> Self {
+            self.stencil_cw = stencil_cw;
+            self.stencil_ccw = stencil_ccw;
+            self
+        }
+
+        /// Sets the culling for each face winding. By default, culling is disabled.
+        pub fn with_culling(mut self, cull_ccw: bool, cull_cw: bool) -> Self {
+            self.cull_ccw = cull_ccw;
+            self.cull_cw = cull_cw;
+            self
+        }
+
+        /// Sets the primitives topology for this pipeline. The default topology is
+        /// [`PrimitiveTopology::TriangleList`].
+        pub fn with_topology(mut self, topology: PrimitiveTopology) -> Self {
+            self.topology = topology;
+            self
         }
     }
 }
@@ -974,5 +1103,85 @@ mod draw {
             /// The size of the bound region in bytes.
             size: u64,
         },
+    }
+
+    impl<'a, C: Context> ClearRequest<'a, C> {
+        /// Creates a new clear request with the specified target framebuffer and clear parameters.
+        pub fn new(target: &'a C::Framebuffer) -> Self {
+            Self {
+                target,
+                scissor: None,
+                color: None,
+                depth: None,
+                stencil: None,
+            }
+        }
+
+        /// Sets the scissor rectangle for this clear request. Set to `None` by default.
+        pub fn with_scissor(mut self, scissor: TextureBounds) -> Self {
+            self.scissor = Some(scissor);
+            self
+        }
+
+        /// Sets the clear color for this clear request. Set to `None` by default.
+        pub fn with_color(mut self, color: [f32; 4]) -> Self {
+            self.color = Some(color);
+            self
+        }
+
+        /// Sets the clear depth for this clear request. Set to `None` by default.
+        pub fn with_depth(mut self, depth: f32) -> Self {
+            self.depth = Some(depth);
+            self
+        }
+
+        /// Sets the clear stencil value for this clear request. Set to `None` by default.
+        pub fn with_stencil(mut self, stencil: u8) -> Self {
+            self.stencil = Some(stencil);
+            self
+        }
+    }
+
+    impl<'a, C: Context> DrawRequest<'a, C> {
+        /// Creates a new draw request with the specified parameters.
+        pub fn new(target: &'a C::Framebuffer, pipeline: &'a C::Pipeline) -> Self {
+            Self {
+                pipeline,
+                target,
+                bindings: &[],
+                vertices: 0,
+                scissor: None,
+                viewport: TextureBounds {
+                    x: 0,
+                    y: 0,
+                    width: 0,
+                    height: 0,
+                },
+            }
+        }
+
+        /// Sets the bindings for this draw request.
+        pub fn with_bindings(mut self, bindings: &'a [BindingData<'a, C>]) -> Self {
+            self.bindings = bindings;
+            self
+        }
+
+        /// Sets the viewport for this draw request.
+        pub fn with_viewport(mut self, viewport: TextureBounds) -> Self {
+            self.viewport = viewport;
+            self
+        }
+
+        /// Sets the scissor rectangle for this draw request. Set to `None` by default.
+        pub fn with_scissor(mut self, scissor: TextureBounds) -> Self {
+            self.scissor = Some(scissor);
+            self
+        }
+
+        /// Sets the number of vertices to dispatch for this draw request.
+        pub fn with_vertices(mut self, vertices: u32) -> Self {
+            self.vertices = vertices;
+            self
+        }
     }
 }
