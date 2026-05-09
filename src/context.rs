@@ -398,6 +398,7 @@ mod buffer {
     pub struct BufferLayout {
         /// The role of the buffer, which determines how it is expected to be used.
         pub role: BufferRole,
+
         /// The capacity of the buffer in bytes. Must be less than or equal to the maximum buffer
         /// size supported by the backend for the given role.
         pub capacity: u64,
@@ -408,6 +409,12 @@ mod buffer {
 
         /// Whether the buffer is expected to be updated from the CPU (e.g. with
         /// [`Context::upload_buffer`]).
+        ///
+        /// Setting this to `false` can allow the backend to optimize the buffer for GPU-only usage,
+        /// which can improve performance if the buffer is only used as a resource for draw
+        /// calls and never updated from the CPU after creation (for updating such a buffer,
+        /// consider using a separate staging buffer and copying the data to the GPU with
+        /// [`Context::copy_buffer_to_buffer`])
         pub can_upload: bool,
     }
 
