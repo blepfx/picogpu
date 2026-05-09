@@ -25,6 +25,7 @@ pub struct Buffer {
     buffer: vk::Buffer,
     memory: vk::DeviceMemory,
     dynamic: bool,
+    capacity: u64,
 }
 
 #[derive(Debug)]
@@ -32,9 +33,6 @@ pub struct Texture {
     image: vk::Image,
     sampler: vk::Sampler,
 }
-
-#[derive(Debug)]
-pub struct Profiler {}
 
 #[derive(Debug)]
 pub struct Pipeline {
@@ -77,13 +75,13 @@ impl crate::Context for Backend {
     type Buffer = Buffer;
     type Texture = Texture;
     type Pipeline = Pipeline;
-    type Profiler = Profiler;
-    type Framebuffer = vk::Framebuffer;
+    type Framebuffer = ();
+    type Fence = ();
+    type Query = ();
 
     fn capabilities(&self) -> Capabilities {
         Capabilities {
             shader_format: ShaderFormat::SpirV,
-            supports_profiler: self.device_limits.timestamp_period > 0.0,
             ..todo!()
         }
     }
@@ -94,10 +92,9 @@ impl crate::Context for Backend {
                 vk::BufferUsageFlags::TRANSFER_DST
                     | vk::BufferUsageFlags::TRANSFER_SRC
                     | match layout.role {
-                        BufferRole::Vertex => vk::BufferUsageFlags::VERTEX_BUFFER,
-                        BufferRole::Index => vk::BufferUsageFlags::INDEX_BUFFER,
                         BufferRole::Uniform => vk::BufferUsageFlags::UNIFORM_BUFFER,
                         BufferRole::Storage => vk::BufferUsageFlags::STORAGE_BUFFER,
+                        BufferRole::Staging => vk::BufferUsageFlags::empty(),
                     },
             );
 
@@ -125,6 +122,7 @@ impl crate::Context for Backend {
             Ok(Buffer {
                 buffer,
                 memory,
+                capacity: layout.capacity,
                 dynamic: layout.dynamic,
             })
         }
@@ -291,20 +289,6 @@ impl crate::Context for Backend {
         todo!()
     }
 
-    fn create_profiler(&self) -> Result<Self::Profiler, Error> {
-        todo!()
-    }
-
-    fn upload_texture(
-        &self,
-        texture: &Self::Texture,
-        bounds: TextureBounds,
-        format: TextureFormat,
-        data: &[u8],
-    ) -> Result<(), Error> {
-        
-    }
-
     fn upload_buffer(&self, buffer: &Self::Buffer, offset: u64, data: &[u8]) -> Result<(), Error> {
         unsafe {
             if buffer.dynamic {
@@ -323,7 +307,25 @@ impl crate::Context for Backend {
         }
     }
 
-    fn copy_buffer(
+    fn download_buffer(&self, buffer: &Self::Buffer, offset: u64, data: &mut [u8]) -> Result<(), Error> {
+        unsafe {
+            if buffer.dynamic {
+                let mapped = self
+                    .device
+                    .map_memory(buffer.memory, offset, data.len() as u64, vk::MemoryMapFlags::empty())
+                    .unwrap();
+
+                core::ptr::copy_nonoverlapping(mapped as *const u8, data.as_mut_ptr(), data.len());
+                self.device.unmap_memory(buffer.memory);
+            } else {
+                // TODO: implement staging buffer download for non-dynamic buffers
+            }
+
+            Ok(())
+        }
+    }
+
+    fn copy_buffer_to_buffer(
         &self,
         dst_buffer: &Self::Buffer,
         src_buffer: &Self::Buffer,
@@ -347,25 +349,48 @@ impl crate::Context for Backend {
         }
     }
 
-    fn invalidate_buffer(&self, buffer: &Self::Buffer, offset: u64, size: u64) -> Result<(), Error> {
-        todo!()
-    }
-
-    fn read_framebuffer(
+    fn copy_buffer_to_texture(
         &self,
-        target: &Self::Framebuffer,
-        bounds: TextureBounds,
-        format: TextureFormat,
-        data: &mut [u8],
+        dst_texture: &Self::Texture,
+        src_buffer: &Self::Buffer,
+        dst_bounds: TextureBounds,
+        src_format: TextureFormat,
+        src_offset: u64,
     ) -> Result<(), Error> {
-        todo!()
+        unsafe {
+            self.device.cmd_copy_buffer_to_image(
+                self.commands,
+                src_buffer.buffer,
+                dst_texture.image,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                &[vk::BufferImageCopy {
+                    buffer_offset: src_offset,
+                    buffer_row_length: 0,
+                    buffer_image_height: 0,
+                    image_subresource: vk::ImageSubresourceLayers {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        mip_level: 0,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    },
+                    image_offset: vk::Offset3D {
+                        x: dst_bounds.x as i32,
+                        y: dst_bounds.y as i32,
+                        z: 0,
+                    },
+                    image_extent: vk::Extent3D {
+                        width: dst_bounds.width,
+                        height: dst_bounds.height,
+                        depth: 1,
+                    },
+                }],
+            );
+
+            Ok(())
+        }
     }
 
-    fn begin_profiler(&self, profiler: &Self::Profiler) {
-        todo!()
-    }
-
-    fn end_profiler(&self, profiler: &Self::Profiler) -> Option<core::time::Duration> {
+    fn invalidate_buffer(&self, buffer: &Self::Buffer, offset: u64, size: u64) -> Result<(), Error> {
         todo!()
     }
 

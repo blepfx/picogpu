@@ -4,8 +4,8 @@ use ash::vk;
 pub fn texture_format(format: TextureFormat) -> vk::Format {
     match format {
         TextureFormat::RGBA8 => vk::Format::R8G8B8A8_UNORM,
+        TextureFormat::BGRA8 => vk::Format::B8G8R8A8_UNORM,
         TextureFormat::R8 => vk::Format::R8_UNORM,
-        TextureFormat::RGB8 => vk::Format::R8G8B8_UNORM,
         TextureFormat::R8S => vk::Format::R8_SNORM,
         TextureFormat::R16S => vk::Format::R16_SNORM,
         TextureFormat::R32F => vk::Format::R32_SFLOAT,

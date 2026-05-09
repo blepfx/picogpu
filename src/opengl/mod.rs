@@ -48,9 +48,10 @@ pub struct Buffer<'a> {
     context: Context<'a>,
     buffer: glow::Buffer,
 
-    is_dynamic: bool,
-    capacity: u32,
     role: BufferRole,
+    capacity: u32,
+    can_upload: bool,
+    can_download: bool,
 }
 
 /// An OpenGL pipeline object.
@@ -275,18 +276,15 @@ impl<'a> crate::Context for Context<'a> {
             thread.gl.buffer_data_size(
                 buffer_target(layout.role),
                 capacity as i32,
-                if layout.dynamic {
-                    glow::DYNAMIC_DRAW
-                } else {
-                    glow::STATIC_DRAW
-                },
+                buffer_hint(layout.role, layout.can_upload, layout.can_download),
             );
 
             Ok(Buffer {
                 context: self.clone(),
                 buffer,
                 capacity,
-                is_dynamic: layout.dynamic,
+                can_upload: layout.can_upload,
+                can_download: layout.can_download,
                 role: layout.role,
             })
         })
@@ -378,7 +376,6 @@ impl<'a> crate::Context for Context<'a> {
             let shader = match layout.shader {
                 Shader::Glsl(shader) => shader,
                 _ => return Err(Error::UnsupportedFormat),
-                // todo
             };
 
             let program = DisposeOnDrop::new(thread.gl.create_program().map_err(Error::Internal)?, |obj| {
@@ -542,20 +539,16 @@ impl<'a> crate::Context for Context<'a> {
 
             thread.gl.bind_buffer(buffer_target(buffer.role), Some(buffer.buffer));
 
-            if offset == 0 && size == buffer.capacity {
-                thread.gl.buffer_data_size(
-                    buffer_target(buffer.role),
-                    buffer.capacity as i32,
-                    if buffer.is_dynamic {
-                        glow::DYNAMIC_DRAW
-                    } else {
-                        glow::STATIC_DRAW
-                    },
-                );
-            } else if thread.features.invalidate_buffer_sub_data {
+            if thread.features.invalidate_buffer_sub_data {
                 thread
                     .gl
                     .invalidate_buffer_sub_data(buffer_target(buffer.role), offset as i32, size as i32);
+            } else if offset == 0 && size == buffer.capacity {
+                thread.gl.buffer_data_size(
+                    buffer_target(buffer.role),
+                    buffer.capacity as i32,
+                    buffer_hint(buffer.role, buffer.can_upload, buffer.can_download),
+                );
             }
 
             Ok(())
@@ -691,7 +684,7 @@ impl<'a> crate::Context for Context<'a> {
             };
 
             let Some(texture) = texture else {
-                return Err(Error::FramebufferInUse); // TODO: fix this error?
+                return Err(Error::InvalidOperation);
             };
 
             thread.gl.bind_buffer(glow::PIXEL_PACK_BUFFER, Some(dst_buffer.buffer));
@@ -723,17 +716,17 @@ impl<'a> crate::Context for Context<'a> {
                 return Err(Error::InvalidBounds);
             }
 
+            if !buffer.can_upload {
+                return Err(Error::InvalidOperation);
+            }
+
             thread.gl.bind_buffer(buffer_target(buffer.role), Some(buffer.buffer));
 
             if offset == 0 && size == buffer.capacity {
                 thread.gl.buffer_data_u8_slice(
                     buffer_target(buffer.role),
                     data,
-                    if buffer.is_dynamic {
-                        glow::DYNAMIC_DRAW
-                    } else {
-                        glow::STATIC_DRAW
-                    },
+                    buffer_hint(buffer.role, buffer.can_upload, buffer.can_download),
                 );
             } else {
                 thread
@@ -754,6 +747,10 @@ impl<'a> crate::Context for Context<'a> {
                 || !offset.is_multiple_of(thread.features.buffer_alignment(buffer.role))
             {
                 return Err(Error::InvalidBounds);
+            }
+
+            if !buffer.can_download {
+                return Err(Error::InvalidOperation);
             }
 
             thread.gl.bind_buffer(glow::COPY_READ_BUFFER, Some(buffer.buffer));
@@ -796,7 +793,7 @@ impl<'a> crate::Context for Context<'a> {
     fn end_query(&self, query: &Self::Query) -> Result<(), Error> {
         self.with_current(|thread| unsafe {
             let QueryState::Begun(gl_query) = query.state.get() else {
-                return Ok(()); // TODO: ?
+                return Err(Error::InvalidOperation);
             };
 
             thread.gl.end_query(query_target(query.type_));
@@ -809,7 +806,7 @@ impl<'a> crate::Context for Context<'a> {
         self.with_current(|thread| unsafe {
             match query.state.get() {
                 QueryState::Available(result) => Ok(Some(result)),
-                QueryState::Begun(_) => Ok(None),
+                QueryState::Begun(_) => Err(Error::InvalidOperation),
                 QueryState::Ended(gl_query) => {
                     let available = thread
                         .gl

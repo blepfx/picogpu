@@ -73,8 +73,8 @@ pub trait Context: Sized {
     /// - [`Error::UnsupportedSize`] if the requested framebuffer dimensions are larger than what is
     ///   supported.
     /// - [`Error::UnsupportedFormat`] if the requested color/depth/stencil format is not supported,
-    ///   or if too many attachments were requested.
-    /// - [`Error::UnsupportedSampleCount`] if the requested MSAA sample count is not supported.
+    ///   if the requested MSAA sample count is not supported, if the requested number of
+    ///   attachments is not supported, or if too many attachments were requested.
     /// - [`Error::Internal`] if an internal error occurs while creating the framebuffer.
     fn create_framebuffer(&self, layout: FramebufferLayout) -> Result<Self::Framebuffer, Error>;
 
@@ -82,6 +82,8 @@ pub trait Context: Sized {
     ///
     /// # Errors
     /// - [`Error::InvalidResource`] if the buffer does not belong to this context.
+    /// - [`Error::InvalidOperation`] if the buffer was not created with the
+    ///   [`BufferLayout::can_upload`] flag.
     /// - [`Error::InvalidBounds`] if the offset and data size exceed the buffer capacity, or if the
     ///   offset does not match alignment requirements for the buffer layout.
     /// - [`Error::Internal`] if an internal error occurs while uploading the data.
@@ -94,10 +96,13 @@ pub trait Context: Sized {
     /// Calling this method has to wait until all previous operations that write to this buffer are
     /// finished, which could cause a stall if the buffer is still in use by the GPU.
     ///
-    /// To read the data in an asynchronous manner, ..
+    /// To read the data in an asynchronous manner, consider using a fence
+    /// ([`Context::insert_fence`]).
     ///
     /// # Errors
     /// - [`Error::InvalidResource`] if the buffer does not belong to this context.
+    /// - [`Error::InvalidOperation`] if the buffer was not created with the
+    ///   [`BufferLayout::can_download`] flag.
     /// - [`Error::InvalidBounds`] if the offset exceeds the buffer capacity, or if the offset does
     ///   not match alignment requirements for the buffer layout.
     /// - [`Error::Internal`] if an internal error occurs while downloading the data.
@@ -184,6 +189,7 @@ pub trait Context: Sized {
     ///
     /// # Errors
     /// - [`Error::InvalidResource`] if the query does not belong to this context.
+    /// - [`Error::InvalidOperation`] if [`Context::end_query`] was called for this query before.
     /// - [`Error::Internal`] if an internal error occurs while ending the query.
     fn end_query(&self, query: &Self::Query) -> Result<(), Error>;
 
@@ -191,6 +197,7 @@ pub trait Context: Sized {
     ///
     /// # Errors
     /// - [`Error::InvalidResource`] if the query does not belong to this context.
+    /// - [`Error::InvalidOperation`] if [`Context::end_query`] has not been called for this query.
     /// - [`Error::Internal`] if an internal error occurs while reading the query.
     fn read_query(&self, query: &Self::Query) -> Result<Option<u64>, Error>;
 
@@ -229,9 +236,9 @@ pub trait Context: Sized {
     /// # Errors
     /// - [`Error::InvalidResource`] if the framebuffer, pipeline, or any resources used in the
     ///   bindings do not belong to this context.
-    /// - [`Error::InvalidBinding`] if the provided bindings do not match the bindings declared when
-    ///   the pipeline was created (e.g. wrong number of bindings, or wrong types of bindings).
-    /// - [`Error::InvalidFramebuffer`] if the target framebuffer is also used as a binding resource
+    /// - [`Error::BindingMismatch`] if the provided bindings do not match the bindings declared
+    ///   when the pipeline was created (e.g. wrong number of bindings, or wrong types of bindings).
+    /// - [`Error::FramebufferInUse`] if the target framebuffer is also used as a binding resource
     ///   at the same time.
     /// - [`Error::Internal`] if an internal error occurs while issuing the draw call.
     fn draw(&self, draw: DrawRequest<Self>) -> Result<(), Error>;
@@ -307,6 +314,9 @@ pub enum Error {
     /// Trying to update a texture/buffer for a region that is out of bounds for a resource,
     /// or the bounds overlap when copying from/to the same buffer.
     InvalidBounds,
+    /// Trying to perform an operation that is not valid in the current state (e.g. attempt to
+    /// upload to a non-writable buffer, or attempt to read from an open query)
+    InvalidOperation,
     /// Trying to use a resource that does not belong to this context
     InvalidResource,
     /// Attempt to create a context with an invalid backend state (i.e. a non-current or
@@ -344,6 +354,7 @@ impl core::fmt::Display for Error {
             Error::InvalidContext => write!(f, "invalid context"),
             Error::InvalidBounds => write!(f, "invalid bounds for a resource update"),
             Error::InvalidResource => write!(f, "resource does not belong to this context"),
+            Error::InvalidOperation => write!(f, "operation is not valid in the current state"),
             Error::BindingMismatch(i, msg) => {
                 write!(f, "binding does not match the pipeline (index {}): {}", i, msg)
             }
@@ -363,6 +374,9 @@ impl core::fmt::Display for Error {
 }
 
 mod buffer {
+    #[allow(unused)] //docs
+    use crate::*;
+
     /// The role of a buffer, which determines how it is expected to be used
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum BufferRole {
@@ -387,13 +401,41 @@ mod buffer {
         /// The capacity of the buffer in bytes. Must be less than or equal to the maximum buffer
         /// size supported by the backend for the given role.
         pub capacity: u64,
-        /// Whether the buffer is expected to be updated frequently with new data.
-        ///
-        /// As a rule of thumb, if you plan to update it once or twice over the lifetime of the
-        /// buffer, you can set this to false, but if you plan to update it every frame or so, you
-        /// should set this to true. This is a hint to the backend that can help with choosing the
-        /// right memory type and usage for the buffer.
-        pub dynamic: bool,
+
+        /// Whether the buffer is expected to be read back from the GPU (e.g. with
+        /// [`Context::download_buffer`]).
+        pub can_download: bool,
+
+        /// Whether the buffer is expected to be updated from the CPU (e.g. with
+        /// [`Context::upload_buffer`]).
+        pub can_upload: bool,
+    }
+
+    impl BufferLayout {
+        /// Creates a new buffer layout with the given role and capacity, and default usage flags
+        /// (not readable, not writable).
+        pub fn new(role: BufferRole, capacity: u64) -> Self {
+            Self {
+                role,
+                capacity,
+                can_download: false,
+                can_upload: false,
+            }
+        }
+
+        /// Sets the buffer to be downloadable, which means that it can be read back from the GPU
+        /// with [`Context::download_buffer`].
+        pub fn with_can_download(mut self) -> Self {
+            self.can_download = true;
+            self
+        }
+
+        /// Sets the buffer to be uploadable, which means that it can be updated from the CPU with
+        /// [`Context::upload_buffer`].
+        pub fn with_can_upload(mut self) -> Self {
+            self.can_upload = true;
+            self
+        }
     }
 }
 

@@ -553,6 +553,30 @@ pub fn buffer_target(role: BufferRole) -> u32 {
     }
 }
 
+// TODO: idk this is stupid
+pub fn buffer_hint(role: BufferRole, writable: bool, readable: bool) -> u32 {
+    match role {
+        BufferRole::Uniform | BufferRole::Storage => {
+            if writable {
+                glow::DYNAMIC_DRAW
+            } else if readable {
+                glow::DYNAMIC_READ
+            } else {
+                glow::STATIC_DRAW
+            }
+        }
+        BufferRole::Staging => {
+            if writable {
+                glow::DYNAMIC_DRAW
+            } else if readable {
+                glow::DYNAMIC_READ
+            } else {
+                glow::STATIC_COPY
+            }
+        }
+    }
+}
+
 pub fn query_target(query: QueryType) -> u32 {
     match query {
         QueryType::Samples => glow::SAMPLES_PASSED,

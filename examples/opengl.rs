@@ -29,11 +29,7 @@ fn main() {
         });
 
         let buffer = context
-            .create_buffer(BufferLayout {
-                capacity: 32,
-                dynamic: true,
-                role: BufferRole::Uniform,
-            })
+            .create_buffer(BufferLayout::new(BufferRole::Uniform, 32).with_can_upload())
             .unwrap();
 
         let texture = {
@@ -58,11 +54,7 @@ fn main() {
             }
 
             let buffer = context
-                .create_buffer(BufferLayout {
-                    capacity: data.len() as u64,
-                    dynamic: false,
-                    role: BufferRole::Uniform,
-                })
+                .create_buffer(BufferLayout::new(BufferRole::Staging, data.len() as u64).with_can_upload())
                 .unwrap();
 
             context.upload_buffer(&buffer, 0, &data).unwrap();
