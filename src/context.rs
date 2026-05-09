@@ -18,10 +18,12 @@ pub trait Context: Sized {
     /// A pipeline object, represents a shader program and associated draw state (blend mode,
     /// stencil, depth test, etc.)
     type Pipeline: Debug;
-    /// A profiler object, used for measuring GPU execution time of draw calls.
-    type Profiler: Debug;
     /// A framebuffer object, used as a texture you can draw to and sample from.
     type Framebuffer: Debug;
+    /// A fence object, used for synchronizing the CPU command queue with the GPU execution.
+    type Fence: Debug;
+    /// A query object, used for asynchronous queries to the GPU (e.g. for profiling).
+    type Query: Debug;
 
     /// The capabilities of the GPU, used for determining what features are supported and the limits
     /// of various resources (max texture size, max buffer size, etc.)
@@ -76,30 +78,6 @@ pub trait Context: Sized {
     /// - [`Error::Internal`] if an internal error occurs while creating the framebuffer.
     fn create_framebuffer(&self, layout: FramebufferLayout) -> Result<Self::Framebuffer, Error>;
 
-    /// Creates a new profiler, and returns a handle to it.
-    ///
-    /// # Errors
-    /// - [`Error::UnsupportedFeature`] if the GPU does not support profiling.
-    /// - [`Error::Internal`] if an internal error occurs while creating the profiler.
-    fn create_profiler(&self) -> Result<Self::Profiler, Error>;
-
-    /// Uploads data to a texture, replacing the contents of the texture at the given bounds.
-    /// The data must match the layout specified by the (width, height, format) triple.
-    ///
-    /// # Errors
-    /// - [`Error::InvalidResource`] if the texture does not belong to this context.
-    /// - [`Error::InvalidBounds`] if the bounds exceed the texture dimensions.
-    /// - [`Error::InvalidData`] if the data size does not match the expected size for the given
-    ///   bounds and format.
-    /// - [`Error::Internal`] if an internal error occurs while uploading the data.
-    fn upload_texture(
-        &self,
-        texture: &Self::Texture,
-        bounds: TextureBounds,
-        format: TextureFormat,
-        data: &[u8],
-    ) -> Result<(), Error>;
-
     /// Uploads data to a buffer, replacing the contents of the buffer at the given offset.
     ///
     /// # Errors
@@ -108,6 +86,22 @@ pub trait Context: Sized {
     ///   offset does not match alignment requirements for the buffer layout.
     /// - [`Error::Internal`] if an internal error occurs while uploading the data.
     fn upload_buffer(&self, buffer: &Self::Buffer, offset: u64, data: &[u8]) -> Result<(), Error>;
+
+    /// Downloads data from a buffer, returning a readback object that can be used to read the data
+    /// back from the GPU in an asynchronous manner.
+    ///
+    /// # Synchronization
+    /// Calling this method has to wait until all previous operations that write to this buffer are
+    /// finished, which could cause a stall if the buffer is still in use by the GPU.
+    ///
+    /// To read the data in an asynchronous manner, ..
+    ///
+    /// # Errors
+    /// - [`Error::InvalidResource`] if the buffer does not belong to this context.
+    /// - [`Error::InvalidBounds`] if the offset exceeds the buffer capacity, or if the offset does
+    ///   not match alignment requirements for the buffer layout.
+    /// - [`Error::Internal`] if an internal error occurs while downloading the data.
+    fn download_buffer(&self, buffer: &Self::Buffer, offset: u64, data: &mut [u8]) -> Result<(), Error>;
 
     /// Copies data from one buffer to another, replacing the contents of the destination buffer at
     /// the given offset. The source and destination regions must not overlap if the source and
@@ -120,13 +114,51 @@ pub trait Context: Sized {
     ///   destination buffers are the same, or if the offset does not match alignment requirements
     ///   for the buffer layout.
     /// - [`Error::Internal`] if an internal error occurs while copying the data.
-    fn copy_buffer(
+    fn copy_buffer_to_buffer(
         &self,
         dst_buffer: &Self::Buffer,
         src_buffer: &Self::Buffer,
         dst_offset: u64,
         src_offset: u64,
         size: u64,
+    ) -> Result<(), Error>;
+
+    /// Copy data from a buffer to a texture, replacing the contents of the texture at the given
+    /// bounds. The data must match the layout specified by the (width, height, format) triple.
+    ///
+    /// # Errors
+    /// - [`Error::InvalidResource`] if the texture does not belong to this context.
+    /// - [`Error::InvalidBounds`] if the destination bounds exceed the texture dimensions, the
+    ///   source bounds exceed the buffer capacity, or if the offset does not match alignment
+    ///   requirements for the buffer layout.
+    /// - [`Error::Internal`] if an internal error occurs while copying the data.
+    fn copy_buffer_to_texture(
+        &self,
+        dst_texture: &Self::Texture,
+        src_buffer: &Self::Buffer,
+        dst_bounds: TextureBounds,
+        src_format: TextureFormat,
+        src_offset: u64,
+    ) -> Result<(), Error>;
+
+    /// Copy data from a framebuffer to a buffer, replacing the contents of the buffer at the given
+    /// offset. The data will be read from the specified attachment of the framebuffer, and must
+    /// match the layout specified by the (width, height, format) triple.
+    ///
+    /// # Errors
+    /// - [`Error::InvalidResource`] if the framebuffer does not belong to this context.
+    /// - [`Error::InvalidBounds`] if the destination bounds exceed the buffer capacity, the source
+    ///   bounds exceed the framebuffer dimensions, or if the offset does not match alignment
+    ///   requirements for the buffer layout.
+    /// - [`Error::Internal`] if an internal error occurs while copying the data.
+    fn copy_framebuffer_to_buffer(
+        &self,
+        dst_buffer: &Self::Buffer,
+        src_framebuffer: &Self::Framebuffer,
+        src_attachment: FramebufferAttachment,
+        src_bounds: TextureBounds,
+        dst_format: TextureFormat,
+        dst_offset: u64,
     ) -> Result<(), Error>;
 
     /// Invalidates a region of a buffer, indicating that the contents of that region are no longer
@@ -140,37 +172,48 @@ pub trait Context: Sized {
     /// - [`Error::Internal`] if an internal error occurs while invalidating the buffer.
     fn invalidate_buffer(&self, buffer: &Self::Buffer, offset: u64, size: u64) -> Result<(), Error>;
 
-    /// Reads data from a framebuffer, copying the contents of the specified bounds into the
-    /// provided data buffer. This is a slow operation, and should be avoided if possible.
-    /// Common usecases include readback for screenshots and draw tests.
+    /// Begins a profiling section, which will measure the requested [`QueryData`]
+    /// until [`Context::end_query`] is called with the same query.
     ///
     /// # Errors
-    /// - [`Error::InvalidResource`] if the framebuffer does not belong to this context.
-    /// - [`Error::InvalidBounds`] if the bounds exceed the framebuffer dimensions.
-    /// - [`Error::InvalidData`] if the data buffer size does not match the expected size for the
-    ///   given bounds and format.
-    /// - [`Error::Internal`] if an internal error occurs while reading the data.
-    fn read_framebuffer(
-        &self,
-        target: &Self::Framebuffer,
-        bounds: TextureBounds,
-        format: TextureFormat,
-        data: &mut [u8],
-    ) -> Result<(), Error>;
+    /// - [`Error::UnsupportedFeature`] if the backend does not support profiling queries.
+    /// - [`Error::Internal`] if an internal error occurs while beginning the query.
+    fn begin_query(&self, query: QueryType) -> Result<Self::Query, Error>;
 
-    /// Begins a profiling section for the given profiler, which will measure the GPU execution time
-    /// of subsequent draw calls until [`Context::end_profiler`] is called with the same profiler.
-    fn begin_profiler(&self, profiler: &Self::Profiler) -> Result<(), Error>;
-
-    /// Ends a profiling section for the given profiler, returning the measured GPU execution time
-    /// of the draw calls that were executed since [`Context::begin_profiler`] was called on the
-    /// profiler.
+    /// Ends a profiling section for the given query.
     ///
-    /// Profiling is asynchronous, the returned execution time may not be available immediately,
-    /// and can be `None` if the GPU has not finished executing the draw calls yet. Once the
-    /// execution time is available, it will be returned by this method on subsequent calls; the
-    /// profiler will do nothing until a result is available
-    fn end_profiler(&self, profiler: &Self::Profiler) -> Result<Option<Duration>, Error>;
+    /// # Errors
+    /// - [`Error::InvalidResource`] if the query does not belong to this context.
+    /// - [`Error::Internal`] if an internal error occurs while ending the query.
+    fn end_query(&self, query: &Self::Query) -> Result<(), Error>;
+
+    /// Reads the result of a query section, if available.
+    ///
+    /// # Errors
+    /// - [`Error::InvalidResource`] if the query does not belong to this context.
+    /// - [`Error::Internal`] if an internal error occurs while reading the query.
+    fn read_query(&self, query: &Self::Query) -> Result<Option<u64>, Error>;
+
+    /// Insert a fence into the command stream.
+    ///
+    /// # Errors
+    /// - [`Error::UnsupportedFeature`] if the backend does not support fence objects.
+    /// - [`Error::Internal`] if an internal error occurs while creating the fence.
+    fn insert_fence(&self) -> Result<Self::Fence, Error>;
+
+    /// Waits until the GPU has reached the given fence, which means that all commands issued before
+    /// the fence have been completed by the GPU.
+    ///
+    /// Returns Ok(true) if the fence was signalled, Ok(false) if the timeout was reached first.
+    ///
+    /// Use timeout of zero to check the status of the fence without blocking. Please note that the
+    /// implementation is allowed to wake up spuriously and return `Ok(false)` even if the timeout
+    /// has not been reached.
+    ///
+    /// # Errors
+    /// - [`Error::InvalidResource`] if the fence does not belong to this context.
+    /// - [`Error::Internal`] if an internal error occurs while waiting for the fence.
+    fn wait_fence(&self, fence: &Self::Fence, timeout: Duration) -> Result<bool, Error>;
 
     /// Clears a framebuffer with the given clear parameters, which can specify clearing the color,
     /// depth, and stencil buffers in a specified region (or the whole framebuffer if the scissor is
@@ -209,8 +252,6 @@ pub trait Context: Sized {
 pub struct Capabilities {
     /// The shader format that is used by the backend
     pub shader_format: ShaderFormat,
-    /// Whether the backend supports creating and using [`Context::Profiler`] objects.
-    pub supports_profiler: bool,
 
     /// Maximum supported width/height of a framebuffer
     pub framebuffer_size: u32,
@@ -257,8 +298,6 @@ pub enum Error {
     /// The requested format (texture format, shader format, depth/stencil format) is not supported
     /// by the GPU.
     UnsupportedFormat,
-    /// The requested sample count (MSAA) is not supported by the GPU.
-    UnsupportedSampleCount,
     /// The requested feature is not supported by the GPU
     UnsupportedFeature,
     /// The pipeline binding requested is not supported by the GPU (e.g. more texture bindings than
@@ -270,15 +309,14 @@ pub enum Error {
     InvalidBounds,
     /// Trying to use a resource that does not belong to this context
     InvalidResource,
-    /// The data provided for a resource update does not match the requested specification
-    InvalidData,
-    /// The binding provided does not match the pipeline description
-    InvalidBinding(usize, &'static str),
     /// Attempt to create a context with an invalid backend state (i.e. a non-current or
     /// non-existing OpenGL context)
     InvalidContext,
+
+    /// The binding provided does not match the pipeline description
+    BindingMismatch(usize, &'static str),
     /// Attempt to draw to a framebuffer that is also used as a binding resource at the same time.
-    InvalidFramebuffer,
+    FramebufferInUse,
 
     /// An error occurred during fragment shader compilation.
     Compile(CompileStage, String),
@@ -297,9 +335,6 @@ impl core::fmt::Display for Error {
             Error::UnsupportedFormat => {
                 write!(f, "requested format is not supported by the backend")
             }
-            Error::UnsupportedSampleCount => {
-                write!(f, "requested sample count is not supported by the backend")
-            }
             Error::UnsupportedFeature => {
                 write!(f, "requested feature is not supported by the backend")
             }
@@ -308,12 +343,11 @@ impl core::fmt::Display for Error {
             }
             Error::InvalidContext => write!(f, "invalid context"),
             Error::InvalidBounds => write!(f, "invalid bounds for a resource update"),
-            Error::InvalidData => write!(f, "data does not match the requested format"),
             Error::InvalidResource => write!(f, "resource does not belong to this context"),
-            Error::InvalidBinding(i, msg) => {
+            Error::BindingMismatch(i, msg) => {
                 write!(f, "binding does not match the pipeline (index {}): {}", i, msg)
             }
-            Error::InvalidFramebuffer => write!(f, "framebuffer already in use"),
+            Error::FramebufferInUse => write!(f, "framebuffer already in use"),
             Error::Compile(CompileStage::Fragment, msg) => {
                 write!(f, "fragment shader compilation error: {}", msg)
             }
@@ -336,6 +370,9 @@ mod buffer {
         Uniform,
         /// A storage buffer
         Storage,
+        /// A staging buffer (not expected to be used directly in a draw call, but can be used as an
+        /// intermediate buffer for copying data to/from the GPU)
+        Staging,
     }
 
     /// The layout of a buffer, used for creating a buffer with the desired specifications.
@@ -367,10 +404,10 @@ mod texture {
     pub enum TextureFormat {
         /// 8-bit unsigned normalized red channel (0..1)
         R8,
-        /// 8-bit unsigned normalized red, green, blue channels (0..1)
-        RGB8,
         /// 8-bit unsigned normalized red, green, blue, alpha channels (0..1)
         RGBA8,
+        /// 8-bit unsigned normalized blue, green, red, alpha channels (0..1)
+        BGRA8,
 
         /// 8-bit signed normalized red channel (-1..1)
         R8S,
@@ -459,8 +496,8 @@ mod texture {
         pub const fn bytes_per_pixel(&self) -> u32 {
             match self {
                 TextureFormat::R8 => 1,
-                TextureFormat::RGB8 => 3,
                 TextureFormat::RGBA8 => 4,
+                TextureFormat::BGRA8 => 4,
                 TextureFormat::R8S => 1,
                 TextureFormat::R16S => 2,
                 TextureFormat::R32F => 4,
@@ -534,8 +571,6 @@ mod framebuffer {
         Color(u8),
         /// Depth attachment
         Depth,
-        /// Stencil attachment
-        Stencil,
     }
 
     /// The layout of a framebuffer, used for creating a framebuffer with the desired
@@ -968,6 +1003,33 @@ mod pipeline {
 
 mod draw {
     use crate::*;
+
+    /// A query request type.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum QueryType {
+        /// Query the time elapsed between the start and the end of the query, in nanoseconds.
+        Elapsed,
+
+        /// Query the number of samples that passed the depth and stencil tests.
+        Samples,
+
+        /// Query the number of primitives (triangles) generated.
+        Primitives,
+
+        /// Query if _any_ sample passed the depth and stencil tests (returns 0 if no samples
+        /// passed).
+        ///
+        /// Less expensive than [`QueryType::Samples`] if you only need to know whether any samples
+        /// passed, and not the exact number of samples that passed.
+        Occlusion,
+
+        /// Query if _any_ samples passed the depth and stencil tests (returns 0 if no samples
+        /// passed).
+        ///
+        /// Less expensive than [`QueryType::Occlusion`], but may return false positives (i.e. it
+        /// may return true even if no samples passed) due to the conservative nature of the query.
+        OcclusionConservative,
+    }
 
     /// A request to the backend to clear a region of a framebuffer with the specified clear
     /// parameters.

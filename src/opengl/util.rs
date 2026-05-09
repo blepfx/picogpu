@@ -11,8 +11,14 @@ pub struct Features {
     pub version: glow::Version,
     pub uniform_buffers: bool,
     pub storage_buffers: bool,
-    pub query_time_elapsed: bool,
+    pub fence_sync_objects: bool,
     pub invalidate_buffer_sub_data: bool,
+
+    pub query_time_elapsed: bool,
+    pub query_occlusion: bool,
+    pub query_occlusion_conservative: bool,
+    pub query_samples_primitives: bool,
+    pub query_u64_result: bool,
 
     pub max_texture_size: u32,
     pub max_framebuffer_size: u32,
@@ -54,8 +60,21 @@ impl Features {
             let storage_buffers = !version.is_embedded && (version.major, version.minor) >= (4, 3)
                 || version.is_embedded && (version.major, version.minor) >= (3, 1)
                 || extensions.contains("GL_ARB_shader_storage_buffer_object");
+            let fence_sync_objects = !version.is_embedded && (version.major, version.minor) >= (3, 2)
+                || version.is_embedded && (version.major, version.minor) >= (3, 0)
+                || extensions.contains("GL_ARB_sync");
+            let invalidate_buffer_sub_data = !version.is_embedded && (version.major, version.minor) >= (4, 3)
+                || extensions.contains("GL_ARB_invalidate_subdata");
+
+            let query_samples_primitives = !version.is_embedded && (version.major, version.minor) >= (3, 0);
             let query_time_elapsed = !version.is_embedded && (version.major, version.minor) >= (3, 3)
                 || extensions.contains("GL_ARB_timer_query");
+            let query_occlusion = !version.is_embedded && (version.major, version.minor) >= (3, 3)
+                || version.is_embedded && (version.major, version.minor) >= (3, 0)
+                || extensions.contains("GL_ARB_occlusion_query2");
+            let query_occlusion_conservative = !version.is_embedded && (version.major, version.minor) >= (4, 3)
+                || version.is_embedded && (version.major, version.minor) >= (3, 0);
+            let query_u64_result = !version.is_embedded && (version.major, version.minor) >= (3, 3);
 
             let max_texture_size = gl.get_parameter_i32(glow::MAX_TEXTURE_SIZE) as u32;
             let max_renderbuffer_size = gl.get_parameter_i32(glow::MAX_RENDERBUFFER_SIZE) as u32;
@@ -70,10 +89,14 @@ impl Features {
                 version: version.clone(),
                 uniform_buffers,
                 storage_buffers,
-                query_time_elapsed,
+                fence_sync_objects,
+                invalidate_buffer_sub_data,
 
-                invalidate_buffer_sub_data: !version.is_embedded && (version.major, version.minor) >= (4, 3)
-                    || extensions.contains("GL_ARB_invalidate_subdata"),
+                query_samples_primitives,
+                query_time_elapsed,
+                query_occlusion,
+                query_occlusion_conservative,
+                query_u64_result,
 
                 max_texture_size,
                 max_texture_image_units: gl.get_parameter_i32(glow::MAX_TEXTURE_IMAGE_UNITS) as u32,
@@ -129,6 +152,7 @@ impl Features {
         match role {
             BufferRole::Uniform => self.max_uniform_buffer_size,
             BufferRole::Storage => self.max_storage_buffer_size,
+            BufferRole::Staging => u32::MAX,
         }
     }
 
@@ -136,6 +160,7 @@ impl Features {
         match role {
             BufferRole::Uniform => self.uniform_buffer_offset_alignment,
             BufferRole::Storage => self.storage_buffer_offset_alignment,
+            BufferRole::Staging => 1,
         }
     }
 
@@ -498,8 +523,8 @@ pub fn compare_fn(compare: CompareFn) -> u32 {
 pub fn color_format(format: TextureFormat) -> (u32, u32, u32) {
     match format {
         TextureFormat::R8 => (glow::RED, glow::UNSIGNED_BYTE, glow::R8),
-        TextureFormat::RGB8 => (glow::RGB, glow::UNSIGNED_BYTE, glow::RGB8),
         TextureFormat::RGBA8 => (glow::RGBA, glow::UNSIGNED_BYTE, glow::RGBA8),
+        TextureFormat::BGRA8 => (glow::BGRA, glow::UNSIGNED_BYTE, glow::RGBA8),
         TextureFormat::R8S => (glow::RED, glow::BYTE, glow::R8_SNORM),
         TextureFormat::R16S => (glow::RED, glow::SHORT, glow::R16_SNORM),
         TextureFormat::R32F => (glow::RED, glow::FLOAT, glow::R32F),
@@ -524,6 +549,17 @@ pub fn buffer_target(role: BufferRole) -> u32 {
     match role {
         BufferRole::Uniform => glow::UNIFORM_BUFFER,
         BufferRole::Storage => glow::SHADER_STORAGE_BUFFER,
+        BufferRole::Staging => glow::COPY_WRITE_BUFFER,
+    }
+}
+
+pub fn query_target(query: QueryType) -> u32 {
+    match query {
+        QueryType::Samples => glow::SAMPLES_PASSED,
+        QueryType::Elapsed => glow::TIME_ELAPSED,
+        QueryType::Primitives => glow::PRIMITIVES_GENERATED,
+        QueryType::Occlusion => glow::ANY_SAMPLES_PASSED,
+        QueryType::OcclusionConservative => glow::ANY_SAMPLES_PASSED_CONSERVATIVE,
     }
 }
 

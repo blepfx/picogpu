@@ -2,6 +2,7 @@ use picogpu::{
     opengl::{Surface, SurfaceError},
     *,
 };
+use std::time::Duration;
 
 struct GlSurfaceAdapter<'a>(picoview::GlContext<'a>);
 
@@ -56,9 +57,19 @@ fn main() {
                 }
             }
 
+            let buffer = context
+                .create_buffer(BufferLayout {
+                    capacity: data.len() as u64,
+                    dynamic: false,
+                    role: BufferRole::Uniform,
+                })
+                .unwrap();
+
+            context.upload_buffer(&buffer, 0, &data).unwrap();
             context
-                .upload_texture(
+                .copy_buffer_to_texture(
                     &texture,
+                    &buffer,
                     TextureBounds {
                         x: 0,
                         y: 0,
@@ -66,14 +77,12 @@ fn main() {
                         height: 8,
                     },
                     TextureFormat::RGBA8,
-                    &data,
+                    0,
                 )
                 .unwrap();
 
             texture
         };
-
-        let profiler_1 = { context.create_profiler().unwrap() };
 
         {
             let caps = context.capabilities();
@@ -130,6 +139,8 @@ fn main() {
         let mut width = 200;
         let mut height = 200;
 
+        let mut current_query = None;
+
         Box::new(move |event| match event {
             picoview::Event::WindowResize { size } => {
                 width = size.width;
@@ -139,7 +150,17 @@ fn main() {
             picoview::Event::WindowFrame => {
                 frames += 1;
 
-                context.begin_profiler(&profiler_1).unwrap();
+                if let Some(query) = &current_query
+                    && let Some(result) = context.read_query(query).unwrap()
+                {
+                    println!(
+                        "Time elapsed: {:.2}ms",
+                        Duration::from_nanos(result).as_secs_f64() * 1000.0
+                    );
+                    current_query = None;
+                }
+
+                let query = current_query.get_or_insert_with(|| context.begin_query(QueryType::Elapsed).unwrap());
 
                 context
                     .clear(
@@ -186,7 +207,7 @@ fn main() {
                         .unwrap();
                 }
 
-                context.end_profiler(&profiler_1).unwrap();
+                context.end_query(query).unwrap();
                 context.present().unwrap();
             }
 
