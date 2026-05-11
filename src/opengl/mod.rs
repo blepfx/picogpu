@@ -12,13 +12,11 @@ mod surface;
 mod util;
 
 use crate::*;
-use alloc::{boxed::Box, format, rc::Rc, vec::Vec};
-use core::{
-    cell::{Cell, RefCell},
-    fmt::Debug,
-    time::Duration,
-};
 use glow::HasContext;
+use std::cell::{Cell, RefCell};
+use std::fmt::Debug;
+use std::rc::Rc;
+use std::time::Duration;
 use util::*;
 
 pub use surface::{Surface, SurfaceError};
@@ -276,7 +274,7 @@ impl<'a> crate::Context for Context<'a> {
             thread.gl.buffer_data_size(
                 buffer_target(layout.role),
                 capacity as i32,
-                buffer_hint(layout.role, layout.can_upload, layout.can_download),
+                buffer_hint(layout.can_upload, layout.can_download),
             );
 
             Ok(Buffer {
@@ -547,7 +545,7 @@ impl<'a> crate::Context for Context<'a> {
                 thread.gl.buffer_data_size(
                     buffer_target(buffer.role),
                     buffer.capacity as i32,
-                    buffer_hint(buffer.role, buffer.can_upload, buffer.can_download),
+                    buffer_hint(buffer.can_upload, buffer.can_download),
                 );
             }
 
@@ -726,7 +724,7 @@ impl<'a> crate::Context for Context<'a> {
                 thread.gl.buffer_data_u8_slice(
                     buffer_target(buffer.role),
                     data,
-                    buffer_hint(buffer.role, buffer.can_upload, buffer.can_download),
+                    buffer_hint(buffer.can_upload, buffer.can_download),
                 );
             } else {
                 thread

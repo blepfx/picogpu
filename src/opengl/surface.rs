@@ -1,6 +1,5 @@
 use crate::Error;
-use alloc::string::String;
-use core::ffi::{CStr, c_void};
+use std::ffi::{CStr, c_void};
 
 /// A trait representing an OpenGL surface. This must be implemented by the user of the OpenGL
 /// backend/window provider, etc.

@@ -1,5 +1,4 @@
-use alloc::string::String;
-use core::{fmt::Debug, time::Duration};
+use std::{fmt::Debug, time::Duration};
 
 pub use buffer::*;
 pub use draw::*;

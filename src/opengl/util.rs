@@ -1,11 +1,8 @@
 use crate::*;
-use alloc::vec::Vec;
-use core::{
-    ffi::{CStr, c_void},
-    mem::ManuallyDrop,
-    ops::Deref,
-};
 use glow::HasContext;
+use std::ffi::{CStr, c_void};
+use std::mem::ManuallyDrop;
+use std::ops::Deref;
 
 pub struct Features {
     pub version: glow::Version,
@@ -554,26 +551,13 @@ pub fn buffer_target(role: BufferRole) -> u32 {
 }
 
 // TODO: idk this is stupid
-pub fn buffer_hint(role: BufferRole, writable: bool, readable: bool) -> u32 {
-    match role {
-        BufferRole::Uniform | BufferRole::Storage => {
-            if writable {
-                glow::DYNAMIC_DRAW
-            } else if readable {
-                glow::DYNAMIC_READ
-            } else {
-                glow::STATIC_DRAW
-            }
-        }
-        BufferRole::Staging => {
-            if writable {
-                glow::DYNAMIC_DRAW
-            } else if readable {
-                glow::DYNAMIC_READ
-            } else {
-                glow::STATIC_COPY
-            }
-        }
+pub fn buffer_hint(writable: bool, readable: bool) -> u32 {
+    if writable {
+        glow::DYNAMIC_DRAW
+    } else if readable {
+        glow::DYNAMIC_READ
+    } else {
+        glow::STATIC_COPY
     }
 }
 

@@ -4,8 +4,8 @@
 mod util;
 
 use crate::*;
-use alloc::{ffi::CString, format, string::ToString};
 use ash::vk;
+use std::ffi::CString;
 use util::*;
 
 pub struct Backend {
@@ -18,14 +18,21 @@ pub struct Backend {
 
     command_pool: vk::CommandPool,
     query_pool: vk::QueryPool,
+
+    command_buffer: vk::CommandBuffer,
 }
 
 #[derive(Debug)]
 pub struct Buffer {
     buffer: vk::Buffer,
-    memory: vk::DeviceMemory,
-    dynamic: bool,
+
+    gpu_memory: vk::DeviceMemory,
+    cpu_memory: *mut u8,
+
+    role: BufferRole,
     capacity: u64,
+    can_upload: bool,
+    can_download: bool,
 }
 
 #[derive(Debug)]
@@ -39,15 +46,9 @@ pub struct Pipeline {
     pipeline: vk::Pipeline,
 }
 
-#[derive(Debug)]
-pub enum VulkanError {
-    Loading(ash::LoadingError),
-    Error(vk::Result),
-}
-
-impl From<ash::LoadingError> for VulkanError {
+impl From<ash::LoadingError> for crate::Error {
     fn from(err: ash::LoadingError) -> Self {
-        VulkanError::Loading(err)
+        Error::Internal(err.to_string())
     }
 }
 
@@ -58,7 +59,7 @@ impl From<vk::Result> for crate::Error {
 }
 
 impl Backend {
-    pub fn new() -> Result<Self, VulkanError> {
+    pub fn new() -> Result<Self, Error> {
         unsafe {
             let entry = ash::Entry::load()?;
             let instance = entry.create_instance(
@@ -104,8 +105,8 @@ impl crate::Context for Backend {
             let memory_type = find_memorytype_index(
                 &memory_reqs,
                 &self.device_memory_properties,
-                if layout.dynamic {
-                    vk::MemoryPropertyFlags::HOST_VISIBLE
+                if layout.can_upload || layout.can_download {
+                    vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_CACHED
                 } else {
                     vk::MemoryPropertyFlags::DEVICE_LOCAL
                 },
@@ -116,14 +117,26 @@ impl crate::Context for Backend {
                 .allocation_size(memory_reqs.size)
                 .memory_type_index(memory_type);
 
-            let memory = self.device.allocate_memory(&memory_info, None).unwrap();
-            self.device.bind_buffer_memory(buffer, memory, 0).unwrap();
+            let gpu_memory = self.device.allocate_memory(&memory_info, None).unwrap();
+            self.device.bind_buffer_memory(buffer, gpu_memory, 0).unwrap();
+
+            let cpu_memory = if layout.can_upload || layout.can_download {
+                self.device
+                    .map_memory(gpu_memory, 0, layout.capacity, vk::MemoryMapFlags::empty())
+                    .unwrap() as *mut u8
+            } else {
+                null_mut()
+            };
 
             Ok(Buffer {
                 buffer,
-                memory,
+                gpu_memory,
+                cpu_memory,
+
+                role: layout.role,
                 capacity: layout.capacity,
-                dynamic: layout.dynamic,
+                can_download: layout.can_download,
+                can_upload: layout.can_upload,
             })
         }
     }
@@ -291,17 +304,23 @@ impl crate::Context for Backend {
 
     fn upload_buffer(&self, buffer: &Self::Buffer, offset: u64, data: &[u8]) -> Result<(), Error> {
         unsafe {
-            if buffer.dynamic {
-                let mapped = self
-                    .device
-                    .map_memory(buffer.memory, offset, data.len() as u64, vk::MemoryMapFlags::empty())
-                    .unwrap();
-
-                core::ptr::copy_nonoverlapping(data.as_ptr(), mapped as *mut u8, data.len());
-                self.device.unmap_memory(buffer.memory);
-            } else {
-                // TODO: staging buffer upload for non-dynamic buffers
+            if !buffer.can_upload {
+                return Err(Error::InvalidOperation);
             }
+
+            if offset.saturating_add(data.len() as u64) > buffer.capacity {
+                return Err(Error::InvalidBounds);
+            }
+
+            core::ptr::copy_nonoverlapping(data.as_ptr(), buffer.cpu_memory.add(offset as usize), data.len());
+
+            self.device
+                .flush_mapped_memory_ranges(&[vk::MappedMemoryRange::default()
+                    .memory(buffer.gpu_memory)
+                    .offset(offset)
+                    .size(data.len() as u64)])?;
+
+            // TODO: synchronization
 
             Ok(())
         }
@@ -309,17 +328,23 @@ impl crate::Context for Backend {
 
     fn download_buffer(&self, buffer: &Self::Buffer, offset: u64, data: &mut [u8]) -> Result<(), Error> {
         unsafe {
-            if buffer.dynamic {
-                let mapped = self
-                    .device
-                    .map_memory(buffer.memory, offset, data.len() as u64, vk::MemoryMapFlags::empty())
-                    .unwrap();
-
-                core::ptr::copy_nonoverlapping(mapped as *const u8, data.as_mut_ptr(), data.len());
-                self.device.unmap_memory(buffer.memory);
-            } else {
-                // TODO: implement staging buffer download for non-dynamic buffers
+            if !buffer.can_download {
+                return Err(Error::InvalidOperation);
             }
+
+            if offset.saturating_add(data.len() as u64) > buffer.capacity {
+                return Err(Error::InvalidBounds);
+            }
+
+            self.device
+                .invalidate_mapped_memory_ranges(&[vk::MappedMemoryRange::default()
+                    .memory(buffer.gpu_memory)
+                    .offset(offset)
+                    .size(data.len() as u64)])?;
+
+            core::ptr::copy_nonoverlapping(buffer.cpu_memory.add(offset as usize), data.as_mut_ptr(), data.len());
+
+            // TODO: synchronization
 
             Ok(())
         }
@@ -359,14 +384,14 @@ impl crate::Context for Backend {
     ) -> Result<(), Error> {
         unsafe {
             self.device.cmd_copy_buffer_to_image(
-                self.commands,
+                self.command_buffer,
                 src_buffer.buffer,
                 dst_texture.image,
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 &[vk::BufferImageCopy {
                     buffer_offset: src_offset,
-                    buffer_row_length: 0,
-                    buffer_image_height: 0,
+                    buffer_row_length: dst_bounds.width,
+                    buffer_image_height: dst_bounds.height,
                     image_subresource: vk::ImageSubresourceLayers {
                         aspect_mask: vk::ImageAspectFlags::COLOR,
                         mip_level: 0,
@@ -404,10 +429,11 @@ impl crate::Context for Backend {
 
     fn present(&self) -> Result<(), Error> {
         unsafe {
-            self.device.end_command_buffer(self.commands)?;
+            self.device.end_command_buffer(self.command_buffer)?;
             self.device
                 .queue_submit(self.queue, &[vk::SubmitInfo::default()], vk::Fence::null())?;
-            self.device.free_command_buffers(self.command_pool, &[self.commands]);
+            self.device
+                .free_command_buffers(self.command_pool, &[self.command_buffer]);
             Ok(())
         }
     }
