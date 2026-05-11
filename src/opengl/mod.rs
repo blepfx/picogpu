@@ -83,6 +83,7 @@ pub struct Texture<'a> {
 
     width: u32,
     height: u32,
+    format: TextureFormat,
 }
 
 /// An OpenGL framebuffer object.
@@ -187,6 +188,10 @@ impl<'a> Context<'a> {
     /// Can only be called once.
     pub fn attach_debug_callback(&self, callback: impl Fn(DebugMessage, &str) + Send + Sync + 'static) {
         self.with_current(|thread| unsafe {
+            if !thread.features.debug_callback {
+                return Ok(());
+            }
+
             thread.gl.enable(glow::DEBUG_OUTPUT);
             thread.gl.enable(glow::DEBUG_OUTPUT_SYNCHRONOUS);
             thread.gl.debug_message_callback(move |_, type_, _, _, message| {
@@ -365,6 +370,7 @@ impl<'a> crate::Context for Context<'a> {
                 texture,
                 width: layout.width,
                 height: layout.height,
+                format: layout.format,
             })
         })
     }
@@ -555,39 +561,37 @@ impl<'a> crate::Context for Context<'a> {
 
     fn copy_buffer_to_buffer(
         &self,
-        buffer: &Self::Buffer,
-        source_buffer: &Self::Buffer,
-        offset: u64,
-        source_offset: u64,
+        dst_buffer: &Self::Buffer,
+        dst_offset: u64,
+        src_buffer: &Self::Buffer,
+        src_offset: u64,
         size: u64,
     ) -> Result<(), Error> {
         self.with_current(|thread| unsafe {
             let size: u32 = size.try_into().map_err(|_| Error::InvalidBounds)?;
-            let offset: u32 = offset.try_into().map_err(|_| Error::InvalidBounds)?;
-            let source_offset: u32 = source_offset.try_into().map_err(|_| Error::InvalidBounds)?;
+            let offset: u32 = dst_offset.try_into().map_err(|_| Error::InvalidBounds)?;
+            let source_offset: u32 = src_offset.try_into().map_err(|_| Error::InvalidBounds)?;
 
-            if !offset.is_multiple_of(thread.features.buffer_alignment(buffer.role))
-                || !source_offset.is_multiple_of(thread.features.buffer_alignment(source_buffer.role))
+            if !offset.is_multiple_of(thread.features.buffer_alignment(dst_buffer.role))
+                || !source_offset.is_multiple_of(thread.features.buffer_alignment(src_buffer.role))
             {
                 return Err(Error::InvalidBounds);
             }
 
-            if offset.saturating_add(size) > buffer.capacity
-                || source_offset.saturating_add(size) > source_buffer.capacity
+            if offset.saturating_add(size) > dst_buffer.capacity
+                || source_offset.saturating_add(size) > src_buffer.capacity
             {
                 return Err(Error::InvalidBounds);
             }
 
-            if buffer.buffer == source_buffer.buffer
+            if dst_buffer.buffer == src_buffer.buffer
                 && offset.min(source_offset).saturating_add(size) > offset.max(source_offset)
             {
                 return Err(Error::InvalidBounds);
             }
 
-            thread
-                .gl
-                .bind_buffer(glow::COPY_READ_BUFFER, Some(source_buffer.buffer));
-            thread.gl.bind_buffer(glow::COPY_WRITE_BUFFER, Some(buffer.buffer));
+            thread.gl.bind_buffer(glow::COPY_READ_BUFFER, Some(src_buffer.buffer));
+            thread.gl.bind_buffer(glow::COPY_WRITE_BUFFER, Some(dst_buffer.buffer));
             thread.gl.copy_buffer_sub_data(
                 glow::COPY_READ_BUFFER,
                 glow::COPY_WRITE_BUFFER,
@@ -603,15 +607,14 @@ impl<'a> crate::Context for Context<'a> {
     fn copy_buffer_to_texture(
         &self,
         dst_texture: &Self::Texture,
-        src_buffer: &Self::Buffer,
         dst_bounds: TextureBounds,
-        src_format: TextureFormat,
+        src_buffer: &Self::Buffer,
         src_offset: u64,
     ) -> Result<(), Error> {
         self.with_current(|thread| unsafe {
-            let size = dst_bounds.width * dst_bounds.height * src_format.bytes_per_pixel();
+            let size = dst_bounds.width * dst_bounds.height * dst_texture.format.bytes_per_pixel();
             let offset: u32 = src_offset.try_into().map_err(|_| Error::InvalidBounds)?;
-            let (format, data_type, _) = color_format(src_format);
+            let (format, data_type, _) = color_format(dst_texture.format);
 
             if dst_bounds.x.saturating_add(dst_bounds.width) > dst_texture.width
                 || dst_bounds.y.saturating_add(dst_bounds.height) > dst_texture.height
@@ -650,11 +653,11 @@ impl<'a> crate::Context for Context<'a> {
     fn copy_framebuffer_to_buffer(
         &self,
         dst_buffer: &Self::Buffer,
+        dst_format: TextureFormat,
+        dst_offset: u64,
         src_framebuffer: &Self::Framebuffer,
         src_attachment: FramebufferAttachment,
         src_bounds: TextureBounds,
-        dst_format: TextureFormat,
-        dst_offset: u64,
     ) -> Result<(), Error> {
         self.with_current(|thread| unsafe {
             let size = src_bounds.width * src_bounds.height * dst_format.bytes_per_pixel();

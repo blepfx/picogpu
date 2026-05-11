@@ -1,19 +1,15 @@
 mod util;
 
+use crate::metal::util::*;
 use crate::{
-    BlendMode, PrimitiveTopology, TextureBorder, TextureFilter,
-    context::{
-        BufferLayout, Capabilities, ClearRequest, Context, DrawRequest, Error, FramebufferLayout, PipelineLayout,
-        TextureBounds, TextureFormat, TextureLayout,
-    },
-    metal::util::{blend_factor, blend_op, texture_wrap},
+    BlendMode, BufferLayout, Capabilities, ClearRequest, DrawRequest, Error, FramebufferLayout, PipelineLayout,
+    PrimitiveTopology, TextureBorder, TextureBounds, TextureFilter, TextureFormat, TextureLayout,
 };
-use alloc::{string::ToString, vec::Vec};
-use core::time::Duration;
-use objc2::{rc::Retained, runtime::ProtocolObject};
+use objc2::rc::Retained;
+use objc2::runtime::ProtocolObject;
 use objc2_metal::*;
 
-pub struct MetalContext {
+pub struct Context {
     device: Retained<ProtocolObject<dyn MTLDevice>>,
     queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
     buffer: Option<Retained<ProtocolObject<dyn MTLCommandBuffer>>>,
@@ -44,7 +40,7 @@ pub struct Framebuffer {
     depth: Option<Retained<ProtocolObject<dyn MTLTexture>>>,
 }
 
-impl MetalContext {
+impl Context {
     /// Creates a new [`MetalContext`] from an existing [`MTLDevice`]
     pub fn from_device(device: Retained<ProtocolObject<dyn MTLDevice>>) -> Result<Self, Error> {
         let queue = device
@@ -64,12 +60,13 @@ impl MetalContext {
     }
 }
 
-impl Context for MetalContext {
+impl crate::Context for Context {
     type Buffer = Buffer;
     type Texture = Texture;
     type Pipeline = Pipeline;
-    type Profiler = ();
     type Framebuffer = ();
+    type Fence = ();
+    type Query = ();
 
     fn capabilities(&self) -> Capabilities {
         todo!()
@@ -98,24 +95,7 @@ impl Context for MetalContext {
         descriptor.setUsage(MTLTextureUsage::ShaderRead);
         descriptor.setTextureType(MTLTextureType::Type2D);
         descriptor.setStorageMode(MTLStorageMode::Private);
-
-        match layout.format {
-            TextureFormat::R8 => descriptor.setPixelFormat(MTLPixelFormat::R8Unorm),
-            TextureFormat::R8S => descriptor.setPixelFormat(MTLPixelFormat::R8Snorm),
-            TextureFormat::R16S => descriptor.setPixelFormat(MTLPixelFormat::R16Snorm),
-            TextureFormat::R32F => descriptor.setPixelFormat(MTLPixelFormat::R32Float),
-            TextureFormat::RG32F => descriptor.setPixelFormat(MTLPixelFormat::RG32Float),
-            TextureFormat::RGBA8 => descriptor.setPixelFormat(MTLPixelFormat::BGRA8Unorm),
-            TextureFormat::RGB8 => {
-                descriptor.setPixelFormat(MTLPixelFormat::RGBA8Unorm);
-                descriptor.setSwizzle(MTLTextureSwizzleChannels {
-                    red: MTLTextureSwizzle::Red,
-                    green: MTLTextureSwizzle::Green,
-                    blue: MTLTextureSwizzle::Blue,
-                    alpha: MTLTextureSwizzle::One,
-                });
-            }
-        }
+        descriptor.setPixelFormat(texture_format(layout.format));
 
         let texture = self
             .device
@@ -136,7 +116,6 @@ impl Context for MetalContext {
 
         descriptor.setSAddressMode(texture_wrap(layout.wrap_x));
         descriptor.setTAddressMode(texture_wrap(layout.wrap_y));
-
         descriptor.setBorderColor(match layout.wrap_border {
             TextureBorder::Transparent => MTLSamplerBorderColor::TransparentBlack,
             TextureBorder::Black => MTLSamplerBorderColor::OpaqueBlack,
@@ -157,15 +136,7 @@ impl Context for MetalContext {
 
         for (index, output) in layout.color_outputs.iter().enumerate() {
             let attachment = unsafe { descriptor.colorAttachments().objectAtIndexedSubscript(index) };
-            attachment.setPixelFormat(match *output {
-                TextureFormat::R8 => MTLPixelFormat::R8Unorm,
-                TextureFormat::RGB8 => MTLPixelFormat::RGBA8Unorm, // No RGB8 format, use RGBA8 with swizzle
-                TextureFormat::RGBA8 => MTLPixelFormat::BGRA8Unorm,
-                TextureFormat::R8S => MTLPixelFormat::R8Snorm,
-                TextureFormat::R16S => MTLPixelFormat::R16Snorm,
-                TextureFormat::R32F => MTLPixelFormat::R32Float,
-                TextureFormat::RG32F => MTLPixelFormat::RG32Float,
-            });
+            attachment.setPixelFormat(texture_format(*output));
 
             if layout.color_blend == BlendMode::OPAQUE {
                 attachment.setBlendingEnabled(false);
@@ -178,28 +149,6 @@ impl Context for MetalContext {
                 attachment.setDestinationRGBBlendFactor(blend_factor(layout.color_blend.color_dst));
                 attachment.setDestinationAlphaBlendFactor(blend_factor(layout.color_blend.alpha_dst));
             }
-
-            attachment.setWriteMask({
-                let mut mask = MTLColorWriteMask::empty();
-
-                if layout.color_mask.red {
-                    mask |= MTLColorWriteMask::Red;
-                }
-
-                if layout.color_mask.green {
-                    mask |= MTLColorWriteMask::Green;
-                }
-
-                if layout.color_mask.blue {
-                    mask |= MTLColorWriteMask::Blue;
-                }
-
-                if layout.color_mask.alpha {
-                    mask |= MTLColorWriteMask::Alpha;
-                }
-
-                mask
-            });
         }
 
         let pipeline = self
@@ -219,54 +168,15 @@ impl Context for MetalContext {
         Err(Error::UnsupportedFeature)
     }
 
-    fn create_profiler(&self) -> Result<Self::Profiler, Error> {
-        Err(Error::UnsupportedFeature)
-    }
-
-    fn upload_texture(
-        &self,
-        texture: &Self::Texture,
-        bounds: TextureBounds,
-        format: TextureFormat,
-        data: &[u8],
-    ) -> Result<(), Error> {
-        Err(Error::UnsupportedFeature)
-    }
-
     fn upload_buffer(&self, buffer: &Self::Buffer, offset: u64, data: &[u8]) -> Result<(), Error> {
         Err(Error::UnsupportedFeature)
     }
 
-    fn copy_buffer(
-        &self,
-        dst_buffer: &Self::Buffer,
-        src_buffer: &Self::Buffer,
-        dst_offset: u64,
-        src_offset: u64,
-        size: u64,
-    ) -> Result<(), Error> {
+    fn download_buffer(&self, buffer: &Self::Buffer, offset: u64, data: &mut [u8]) -> Result<(), Error> {
         Err(Error::UnsupportedFeature)
     }
 
     fn invalidate_buffer(&self, buffer: &Self::Buffer, offset: u64, size: u64) -> Result<(), Error> {
-        Err(Error::UnsupportedFeature)
-    }
-
-    fn read_framebuffer(
-        &self,
-        target: &Self::Framebuffer,
-        bounds: TextureBounds,
-        format: TextureFormat,
-        data: &mut [u8],
-    ) -> Result<(), Error> {
-        Err(Error::UnsupportedFeature)
-    }
-
-    fn begin_profiler(&self, profiler: &Self::Profiler) -> Result<(), Error> {
-        Err(Error::UnsupportedFeature)
-    }
-
-    fn end_profiler(&self, profiler: &Self::Profiler) -> Result<Option<Duration>, Error> {
         Err(Error::UnsupportedFeature)
     }
 
@@ -280,5 +190,58 @@ impl Context for MetalContext {
 
     fn present(&self) -> Result<(), Error> {
         Err(Error::UnsupportedFeature)
+    }
+
+    fn copy_buffer_to_buffer(
+        &self,
+        dst_buffer: &Self::Buffer,
+        dst_offset: u64,
+        src_buffer: &Self::Buffer,
+        src_offset: u64,
+        size: u64,
+    ) -> Result<(), Error> {
+        todo!()
+    }
+
+    fn copy_buffer_to_texture(
+        &self,
+        dst_texture: &Self::Texture,
+        dst_bounds: TextureBounds,
+        src_buffer: &Self::Buffer,
+        src_offset: u64,
+    ) -> Result<(), Error> {
+        todo!()
+    }
+
+    fn copy_framebuffer_to_buffer(
+        &self,
+        dst_buffer: &Self::Buffer,
+        dst_format: TextureFormat,
+        dst_offset: u64,
+        src_framebuffer: &Self::Framebuffer,
+        src_attachment: crate::FramebufferAttachment,
+        src_bounds: TextureBounds,
+    ) -> Result<(), Error> {
+        todo!()
+    }
+
+    fn begin_query(&self, query: crate::QueryType) -> Result<Self::Query, Error> {
+        todo!()
+    }
+
+    fn end_query(&self, query: &Self::Query) -> Result<(), Error> {
+        todo!()
+    }
+
+    fn read_query(&self, query: &Self::Query) -> Result<Option<u64>, Error> {
+        todo!()
+    }
+
+    fn insert_fence(&self) -> Result<Self::Fence, Error> {
+        todo!()
+    }
+
+    fn wait_fence(&self, fence: &Self::Fence, timeout: std::time::Duration) -> Result<bool, Error> {
+        todo!()
     }
 }

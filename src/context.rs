@@ -1,4 +1,5 @@
-use std::{fmt::Debug, time::Duration};
+use std::fmt::Debug;
+use std::time::Duration;
 
 pub use buffer::*;
 pub use draw::*;
@@ -121,14 +122,17 @@ pub trait Context: Sized {
     fn copy_buffer_to_buffer(
         &self,
         dst_buffer: &Self::Buffer,
-        src_buffer: &Self::Buffer,
         dst_offset: u64,
+        src_buffer: &Self::Buffer,
         src_offset: u64,
         size: u64,
     ) -> Result<(), Error>;
 
     /// Copy data from a buffer to a texture, replacing the contents of the texture at the given
     /// bounds. The data must match the layout specified by the (width, height, format) triple.
+    ///
+    /// Texture data must conform to the native format of the destination texture (as specified in
+    /// [`Context::create_texture`])
     ///
     /// # Errors
     /// - [`Error::InvalidResource`] if the texture does not belong to this context.
@@ -139,9 +143,8 @@ pub trait Context: Sized {
     fn copy_buffer_to_texture(
         &self,
         dst_texture: &Self::Texture,
-        src_buffer: &Self::Buffer,
         dst_bounds: TextureBounds,
-        src_format: TextureFormat,
+        src_buffer: &Self::Buffer,
         src_offset: u64,
     ) -> Result<(), Error>;
 
@@ -158,11 +161,11 @@ pub trait Context: Sized {
     fn copy_framebuffer_to_buffer(
         &self,
         dst_buffer: &Self::Buffer,
+        dst_format: TextureFormat,
+        dst_offset: u64,
         src_framebuffer: &Self::Framebuffer,
         src_attachment: FramebufferAttachment,
         src_bounds: TextureBounds,
-        dst_format: TextureFormat,
-        dst_offset: u64,
     ) -> Result<(), Error>;
 
     /// Invalidates a region of a buffer, indicating that the contents of that region are no longer

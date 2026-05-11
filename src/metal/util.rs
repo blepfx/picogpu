@@ -13,7 +13,7 @@ pub fn texture_wrap(wrap: TextureWrap) -> MTLSamplerAddressMode {
 pub fn texture_format(format: TextureFormat) -> MTLPixelFormat {
     match format {
         TextureFormat::RGBA8 => MTLPixelFormat::RGBA8Unorm,
-        TextureFormat::RGB8 => MTLPixelFormat::RGBA8Unorm, // No RGB8 format, use RGBA8 with swizzle
+        TextureFormat::BGRA8 => MTLPixelFormat::BGRA8Unorm,
         TextureFormat::R8 => MTLPixelFormat::R8Unorm,
         TextureFormat::R8S => MTLPixelFormat::R8Snorm,
         TextureFormat::R16S => MTLPixelFormat::R16Snorm,

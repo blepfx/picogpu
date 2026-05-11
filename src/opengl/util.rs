@@ -8,6 +8,8 @@ pub struct Features {
     pub version: glow::Version,
     pub uniform_buffers: bool,
     pub storage_buffers: bool,
+
+    pub debug_callback: bool,
     pub fence_sync_objects: bool,
     pub invalidate_buffer_sub_data: bool,
 
@@ -62,6 +64,9 @@ impl Features {
                 || extensions.contains("GL_ARB_sync");
             let invalidate_buffer_sub_data = !version.is_embedded && (version.major, version.minor) >= (4, 3)
                 || extensions.contains("GL_ARB_invalidate_subdata");
+            let debug_callback = !version.is_embedded && (version.major, version.minor) >= (4, 3)
+                || extensions.contains("GL_ARB_debug_output")
+                || extensions.contains("GL_KHR_debug");
 
             let query_samples_primitives = !version.is_embedded && (version.major, version.minor) >= (3, 0);
             let query_time_elapsed = !version.is_embedded && (version.major, version.minor) >= (3, 3)
@@ -86,8 +91,10 @@ impl Features {
                 version: version.clone(),
                 uniform_buffers,
                 storage_buffers,
+
                 fence_sync_objects,
                 invalidate_buffer_sub_data,
+                debug_callback,
 
                 query_samples_primitives,
                 query_time_elapsed,

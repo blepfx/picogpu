@@ -1,7 +1,5 @@
-use picogpu::{
-    opengl::{Surface, SurfaceError},
-    *,
-};
+use picogpu::opengl::{Surface, SurfaceError};
+use picogpu::*;
 use std::time::Duration;
 
 struct GlSurfaceAdapter<'a>(picoview::GlContext<'a>);
@@ -61,14 +59,13 @@ fn main() {
             context
                 .copy_buffer_to_texture(
                     &texture,
-                    &buffer,
                     TextureBounds {
                         x: 0,
                         y: 0,
                         width: 8,
                         height: 8,
                     },
-                    TextureFormat::RGBA8,
+                    &buffer,
                     0,
                 )
                 .unwrap();
@@ -110,9 +107,11 @@ fn main() {
                                 vec2 offset;
                             };
 
+                            out vec4 fragColor;
+
                             void main() {
-                                vec4 texture = texture2D(Texture, gl_FragCoord.xy / vec2(8.0, 8.0) + offset);
-                                gl_FragColor = texture * color;
+                                vec4 tex = texture(Texture, gl_FragCoord.xy / vec2(8.0, 8.0) + offset);
+                                fragColor = tex * color;
                             }
                         "#,
                 bindings: &["Uniforms", "Texture"],
@@ -211,7 +210,7 @@ fn main() {
     })
     .with_resizable((0, 0), (1000, 1000))
     .with_opengl(picoview::GlConfig {
-        version: picoview::GlVersion::Compat(1, 1),
+        version: picoview::GlVersion::Core(3, 3),
         msaa_count: 4,
         ..Default::default()
     })
