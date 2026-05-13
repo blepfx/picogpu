@@ -15,6 +15,7 @@ use crate::*;
 use glow::HasContext;
 use std::cell::{Cell, RefCell};
 use std::fmt::Debug;
+use std::mem::replace;
 use std::rc::Rc;
 use std::time::Duration;
 use util::*;
@@ -23,9 +24,9 @@ pub use surface::{Surface, SurfaceError};
 
 /// OpenGL implementation of the `picogpu` rendering backend.
 #[derive(Clone)]
-pub struct Context<'a>(Rc<RefCell<ContextThread<'a>>>);
+pub struct Context<'a>(Rc<RefCell<ContextInner<'a>>>);
 
-struct ContextThread<'a> {
+struct ContextInner<'a> {
     gl: glow::Context,
     features: Features,
     surface: Box<dyn Surface + 'a>,
@@ -36,6 +37,9 @@ struct ContextThread<'a> {
     last_framebuffer: Option<Option<glow::Framebuffer>>,
 
     query_pool: Vec<glow::Query>,
+    query_timestamp: bool,
+    query_primitives: bool,
+    query_occlusion: bool,
 }
 
 /// An OpenGL buffer object.
@@ -94,8 +98,21 @@ pub struct Framebuffer<'a> {
     context: Context<'a>,
     framebuffer: Option<glow::Framebuffer>,
 
-    color: Vec<FramebufferStorage>,
-    depth: Option<FramebufferStorage>,
+    color: Vec<FramebufferColor>,
+    depth: Option<FramebufferDepthStencil>,
+}
+
+#[derive(Debug)]
+struct FramebufferColor {
+    storage: FramebufferStorage,
+    format: TextureFormat,
+}
+
+#[derive(Debug)]
+struct FramebufferDepthStencil {
+    storage: FramebufferStorage,
+    depth: Option<DepthFormat>,
+    stencil: Option<StencilFormat>,
 }
 
 /// An OpenGL fence object.
@@ -104,7 +121,7 @@ pub struct Framebuffer<'a> {
 #[derive(Debug)]
 pub struct Fence<'a> {
     context: Context<'a>,
-    sync: glow::Fence,
+    fence: Option<glow::Fence>,
 }
 
 /// An OpenGL query object.
@@ -167,7 +184,7 @@ impl<'a> Context<'a> {
                 return Err(Error::Internal(format!("opengl version too old: {:?}", gl.version())));
             };
 
-            Ok(Self(Rc::new(RefCell::new(ContextThread {
+            Ok(Self(Rc::new(RefCell::new(ContextInner {
                 gl,
                 features,
                 surface: Box::new(surface),
@@ -178,6 +195,9 @@ impl<'a> Context<'a> {
                 last_framebuffer: None,
 
                 query_pool: Vec::new(),
+                query_occlusion: false,
+                query_primitives: false,
+                query_timestamp: false,
             }))))
         }
     }
@@ -224,7 +244,7 @@ impl<'a> Context<'a> {
         }
     }
 
-    fn with_current<R>(&self, f: impl FnOnce(&mut ContextThread) -> Result<R, Error>) -> Result<R, Error> {
+    fn with_current<R>(&self, f: impl FnOnce(&mut ContextInner) -> Result<R, Error>) -> Result<R, Error> {
         let mut context = self.0.borrow_mut();
         context.surface.make_current()?;
         f(&mut context)
@@ -324,23 +344,13 @@ impl<'a> crate::Context for Context<'a> {
             thread.gl.tex_parameter_i32(
                 glow::TEXTURE_2D,
                 glow::TEXTURE_WRAP_S,
-                match layout.wrap_x {
-                    TextureWrap::Mirror => glow::MIRRORED_REPEAT as i32,
-                    TextureWrap::Repeat => glow::REPEAT as i32,
-                    TextureWrap::Clamp => glow::CLAMP_TO_EDGE as i32,
-                    TextureWrap::Border => glow::CLAMP_TO_BORDER as i32,
-                },
+                texture_wrap(layout.wrap_x) as i32,
             );
 
             thread.gl.tex_parameter_i32(
                 glow::TEXTURE_2D,
                 glow::TEXTURE_WRAP_T,
-                match layout.wrap_y {
-                    TextureWrap::Mirror => glow::MIRRORED_REPEAT as i32,
-                    TextureWrap::Repeat => glow::REPEAT as i32,
-                    TextureWrap::Clamp => glow::CLAMP_TO_EDGE as i32,
-                    TextureWrap::Border => glow::CLAMP_TO_BORDER as i32,
-                },
+                texture_wrap(layout.wrap_y) as i32,
             );
 
             thread.gl.tex_parameter_f32_slice(
@@ -479,11 +489,11 @@ impl<'a> crate::Context for Context<'a> {
                 .iter()
                 .enumerate()
                 .map(|(index, format)| {
-                    let (format, data_type, internal_format) = color_format(*format);
+                    let (gl_format, data_type, internal_format) = color_format(*format);
                     let storage = FramebufferStorage::create(
                         &thread.gl,
                         glow::COLOR_ATTACHMENT0 + index as u32,
-                        format,
+                        gl_format,
                         data_type,
                         internal_format,
                         layout.width,
@@ -492,7 +502,13 @@ impl<'a> crate::Context for Context<'a> {
                         layout.is_color_bindable,
                     )?;
 
-                    Ok(DisposeOnDrop::new(storage, |obj| obj.delete(&thread.gl)))
+                    Ok(DisposeOnDrop::new(
+                        FramebufferColor {
+                            storage,
+                            format: *format,
+                        },
+                        |obj| obj.storage.delete(&thread.gl),
+                    ))
                 })
                 .collect::<Result<Vec<_>, Error>>()?;
 
@@ -509,7 +525,14 @@ impl<'a> crate::Context for Context<'a> {
                     layout.is_color_bindable,
                 )?;
 
-                Some(DisposeOnDrop::new(storage, |obj| obj.delete(&thread.gl)))
+                Some(DisposeOnDrop::new(
+                    FramebufferDepthStencil {
+                        storage,
+                        depth: layout.depth,
+                        stencil: layout.stencil,
+                    },
+                    |obj| obj.storage.delete(&thread.gl),
+                ))
             } else {
                 None
             };
@@ -527,35 +550,6 @@ impl<'a> crate::Context for Context<'a> {
                 color: color.into_iter().map(|storage| storage.take()).collect(),
                 depth: depth.map(|storage| storage.take()),
             })
-        })
-    }
-
-    fn invalidate_buffer(&self, buffer: &Self::Buffer, offset: u64, size: u64) -> Result<(), Error> {
-        self.with_current(|thread| unsafe {
-            let size: u32 = size.try_into().map_err(|_| Error::InvalidBounds)?;
-            let offset: u32 = offset.try_into().map_err(|_| Error::InvalidBounds)?;
-
-            if offset.saturating_add(size) > buffer.capacity
-                || !offset.is_multiple_of(thread.features.buffer_alignment(buffer.role))
-            {
-                return Err(Error::InvalidBounds);
-            }
-
-            thread.gl.bind_buffer(buffer_target(buffer.role), Some(buffer.buffer));
-
-            if thread.features.invalidate_buffer_sub_data {
-                thread
-                    .gl
-                    .invalidate_buffer_sub_data(buffer_target(buffer.role), offset as i32, size as i32);
-            } else if offset == 0 && size == buffer.capacity {
-                thread.gl.buffer_data_size(
-                    buffer_target(buffer.role),
-                    buffer.capacity as i32,
-                    buffer_hint(buffer.can_upload, buffer.can_download),
-                );
-            }
-
-            Ok(())
         })
     }
 
@@ -632,6 +626,7 @@ impl<'a> crate::Context for Context<'a> {
                 .gl
                 .bind_buffer(glow::PIXEL_UNPACK_BUFFER, Some(src_buffer.buffer));
             thread.gl.bind_texture(glow::TEXTURE_2D, Some(dst_texture.texture));
+            thread.gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
             thread.gl.tex_sub_image_2d(
                 glow::TEXTURE_2D,
                 0,
@@ -653,16 +648,43 @@ impl<'a> crate::Context for Context<'a> {
     fn copy_framebuffer_to_buffer(
         &self,
         dst_buffer: &Self::Buffer,
-        dst_format: TextureFormat,
         dst_offset: u64,
         src_framebuffer: &Self::Framebuffer,
         src_attachment: FramebufferAttachment,
         src_bounds: TextureBounds,
     ) -> Result<(), Error> {
         self.with_current(|thread| unsafe {
-            let size = src_bounds.width * src_bounds.height * dst_format.bytes_per_pixel();
+            let (format, gltype, pixel_size) = match src_attachment {
+                FramebufferAttachment::Stencil => {
+                    if src_framebuffer.depth.as_ref().is_none_or(|d| d.stencil.is_none()) {
+                        return Err(Error::InvalidOperation);
+                    }
+
+                    (glow::STENCIL_INDEX, glow::UNSIGNED_BYTE, 1)
+                }
+
+                FramebufferAttachment::Depth => {
+                    if src_framebuffer.depth.as_ref().is_none_or(|d| d.depth.is_none()) {
+                        return Err(Error::InvalidOperation);
+                    }
+
+                    (glow::DEPTH_COMPONENT, glow::FLOAT, 4)
+                }
+
+                FramebufferAttachment::Color(index) => {
+                    let color = src_framebuffer
+                        .color
+                        .get(index as usize)
+                        .ok_or(Error::InvalidOperation)?;
+
+                    thread.gl.read_buffer(glow::COLOR_ATTACHMENT0 + index as u32);
+                    let (format, gl_type, _) = color_format(color.format);
+                    (format, gl_type, color.format.bytes_per_pixel())
+                }
+            };
+
+            let size = src_bounds.width * src_bounds.height * pixel_size;
             let offset: u32 = dst_offset.try_into().map_err(|_| Error::InvalidBounds)?;
-            let (format, data_type, _) = color_format(dst_format);
 
             if src_bounds.x.saturating_add(src_bounds.width) > thread.features.max_framebuffer_size
                 || src_bounds.y.saturating_add(src_bounds.height) > thread.features.max_framebuffer_size
@@ -676,27 +698,17 @@ impl<'a> crate::Context for Context<'a> {
                 return Err(Error::InvalidBounds);
             }
 
-            let texture = match src_attachment {
-                FramebufferAttachment::Depth => src_framebuffer.depth.and_then(|storage| storage.texture()),
-                FramebufferAttachment::Color(index) => src_framebuffer
-                    .color
-                    .get(index as usize)
-                    .and_then(|storage| storage.texture()),
-            };
-
-            let Some(texture) = texture else {
-                return Err(Error::InvalidOperation);
-            };
-
+            thread
+                .gl
+                .bind_framebuffer(glow::READ_FRAMEBUFFER_BINDING, src_framebuffer.framebuffer);
             thread.gl.bind_buffer(glow::PIXEL_PACK_BUFFER, Some(dst_buffer.buffer));
-            thread.gl.bind_texture(glow::TEXTURE_2D, Some(texture));
             thread.gl.read_pixels(
                 src_bounds.x as i32,
                 src_bounds.y as i32,
                 src_bounds.width as i32,
                 src_bounds.height as i32,
                 format,
-                data_type,
+                gltype,
                 glow::PixelPackData::BufferOffset(offset),
             );
             // dont forget to unbind it!
@@ -766,14 +778,25 @@ impl<'a> crate::Context for Context<'a> {
     fn begin_query(&self, type_: QueryType) -> Result<Self::Query, Error> {
         self.with_current(|thread| unsafe {
             let supported = match type_ {
-                QueryType::Samples | QueryType::Primitives => thread.features.query_samples_primitives,
+                QueryType::Primitives => thread.features.query_samples_primitives,
                 QueryType::Elapsed => thread.features.query_time_elapsed,
-                QueryType::Occlusion => thread.features.query_occlusion,
-                QueryType::OcclusionConservative => thread.features.query_occlusion_conservative,
+                QueryType::Occlusion(OcclusionTest::Samples) => thread.features.query_samples_primitives,
+                QueryType::Occlusion(OcclusionTest::Exact) => thread.features.query_occlusion,
+                QueryType::Occlusion(OcclusionTest::Conservative) => thread.features.query_occlusion_conservative,
             };
 
             if !supported {
                 return Err(Error::UnsupportedFeature);
+            }
+
+            let active = match type_ {
+                QueryType::Primitives => replace(&mut thread.query_primitives, true),
+                QueryType::Elapsed => replace(&mut thread.query_timestamp, true),
+                QueryType::Occlusion(_) => replace(&mut thread.query_occlusion, true),
+            };
+
+            if active {
+                return Err(Error::InvalidOperation);
             }
 
             let query = match thread.query_pool.pop() {
@@ -795,6 +818,12 @@ impl<'a> crate::Context for Context<'a> {
         self.with_current(|thread| unsafe {
             let QueryState::Begun(gl_query) = query.state.get() else {
                 return Err(Error::InvalidOperation);
+            };
+
+            match query.type_ {
+                QueryType::Primitives => thread.query_primitives = false,
+                QueryType::Elapsed => thread.query_timestamp = false,
+                QueryType::Occlusion(_) => thread.query_occlusion = false,
             };
 
             thread.gl.end_query(query_target(query.type_));
@@ -831,32 +860,20 @@ impl<'a> crate::Context for Context<'a> {
         })
     }
 
-    fn insert_fence(&self) -> Result<Self::Fence, Error> {
-        self.with_current(|thread| unsafe {
-            if !thread.features.fence_sync_objects {
-                return Err(Error::UnsupportedFeature);
-            }
-
-            Ok(Fence {
-                context: self.clone(),
-                sync: thread
-                    .gl
-                    .fence_sync(glow::SYNC_GPU_COMMANDS_COMPLETE, 0)
-                    .map_err(Error::Internal)?,
-            })
-        })
-    }
-
     fn wait_fence(&self, fence: &Self::Fence, timeout: Duration) -> Result<bool, Error> {
         self.with_current(|thread| unsafe {
+            let Some(fence) = fence.fence else {
+                return Err(Error::UnsupportedFeature);
+            };
+
             if timeout == Duration::ZERO {
-                let result = thread.gl.get_sync_status(fence.sync);
+                let result = thread.gl.get_sync_status(fence);
                 return Ok(result == glow::SIGNALED);
             }
 
             let result = thread
                 .gl
-                .client_wait_sync(fence.sync, 0, timeout.as_nanos().try_into().unwrap_or(i32::MAX));
+                .client_wait_sync(fence, 0, timeout.as_nanos().try_into().unwrap_or(i32::MAX));
 
             if result == glow::WAIT_FAILED {
                 return Err(Error::Internal("Waiting on a fence failed".into()));
@@ -1012,13 +1029,14 @@ impl<'a> crate::Context for Context<'a> {
                                 }
 
                                 let texture = match attachment {
+                                    FramebufferAttachment::Stencil => None,
                                     FramebufferAttachment::Depth => {
-                                        framebuffer.depth.and_then(|storage| storage.texture())
+                                        framebuffer.depth.as_ref().and_then(|depth| depth.storage.texture())
                                     }
                                     FramebufferAttachment::Color(index) => framebuffer
                                         .color
                                         .get(*index as usize)
-                                        .and_then(|storage| storage.texture()),
+                                        .and_then(|color| color.storage.texture()),
                                 };
 
                                 match texture {
@@ -1050,10 +1068,20 @@ impl<'a> crate::Context for Context<'a> {
         })
     }
 
-    fn present(&self) -> Result<(), Error> {
+    fn present(&self) -> Result<Self::Fence, Error> {
         self.with_current(|thread| {
+            let fence = thread
+                .features
+                .fence_sync_objects
+                .then(|| unsafe { thread.gl.fence_sync(glow::SYNC_GPU_COMMANDS_COMPLETE, 0).ok() })
+                .flatten();
+
             thread.surface.swap_buffers()?;
-            Ok(())
+
+            Ok(Fence {
+                context: self.clone(),
+                fence,
+            })
         })
     }
 }
@@ -1094,11 +1122,11 @@ impl Drop for Framebuffer<'_> {
             }
 
             if let Some(depth) = self.depth.take() {
-                depth.delete(&thread.gl);
+                depth.storage.delete(&thread.gl);
             }
 
             for color in self.color.drain(..) {
-                color.delete(&thread.gl);
+                color.storage.delete(&thread.gl);
             }
 
             Ok(())
@@ -1109,7 +1137,10 @@ impl Drop for Framebuffer<'_> {
 impl Drop for Fence<'_> {
     fn drop(&mut self) {
         let _ = self.context.with_current(|thread| unsafe {
-            thread.gl.delete_sync(self.sync);
+            if let Some(fence) = self.fence {
+                thread.gl.delete_sync(fence);
+            }
+
             Ok(())
         });
     }
@@ -1127,7 +1158,7 @@ impl Drop for Query<'_> {
     }
 }
 
-impl Drop for ContextThread<'_> {
+impl Drop for ContextInner<'_> {
     fn drop(&mut self) {
         if self.surface.make_current().is_err() {
             return; // nothing to do, the context is already lost
@@ -1143,6 +1174,6 @@ impl Drop for ContextThread<'_> {
 
 impl Debug for Context<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("Context").finish_non_exhaustive()
+        f.debug_struct("opengl::Context").finish_non_exhaustive()
     }
 }

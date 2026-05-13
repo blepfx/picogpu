@@ -1,4 +1,5 @@
-use std::fmt::Debug;
+use std::error;
+use std::fmt::{self, Debug};
 use std::time::Duration;
 
 pub use buffer::*;
@@ -161,29 +162,18 @@ pub trait Context: Sized {
     fn copy_framebuffer_to_buffer(
         &self,
         dst_buffer: &Self::Buffer,
-        dst_format: TextureFormat,
         dst_offset: u64,
         src_framebuffer: &Self::Framebuffer,
         src_attachment: FramebufferAttachment,
         src_bounds: TextureBounds,
     ) -> Result<(), Error>;
 
-    /// Invalidates a region of a buffer, indicating that the contents of that region are no longer
-    /// needed and can be discarded by the GPU. This is a hint to the backend that can help with
-    /// avoiding unnecessary synchronization for future drawcalls.
-    ///
-    /// # Errors
-    /// - [`Error::InvalidResource`] if the buffer does not belong to this context.
-    /// - [`Error::InvalidBounds`] if the offset and size exceed the buffer capacity, or if the
-    ///   offset does not match alignment requirements for the buffer layout.
-    /// - [`Error::Internal`] if an internal error occurs while invalidating the buffer.
-    fn invalidate_buffer(&self, buffer: &Self::Buffer, offset: u64, size: u64) -> Result<(), Error>;
-
     /// Begins a profiling section, which will measure the requested [`QueryData`]
     /// until [`Context::end_query`] is called with the same query.
     ///
     /// # Errors
     /// - [`Error::UnsupportedFeature`] if the backend does not support profiling queries.
+    /// - [`Error::InvalidOperation`] if a query with the same type is already active.
     /// - [`Error::Internal`] if an internal error occurs while beginning the query.
     fn begin_query(&self, query: QueryType) -> Result<Self::Query, Error>;
 
@@ -203,15 +193,9 @@ pub trait Context: Sized {
     /// - [`Error::Internal`] if an internal error occurs while reading the query.
     fn read_query(&self, query: &Self::Query) -> Result<Option<u64>, Error>;
 
-    /// Insert a fence into the command stream.
-    ///
-    /// # Errors
-    /// - [`Error::UnsupportedFeature`] if the backend does not support fence objects.
-    /// - [`Error::Internal`] if an internal error occurs while creating the fence.
-    fn insert_fence(&self) -> Result<Self::Fence, Error>;
-
     /// Waits until the GPU has reached the given fence, which means that all commands issued before
-    /// the fence have been completed by the GPU.
+    /// the fence have been completed by the GPU. Fences are created by calling
+    /// [`Context::present`].
     ///
     /// Returns Ok(true) if the fence was signalled, Ok(false) if the timeout was reached first.
     ///
@@ -221,6 +205,7 @@ pub trait Context: Sized {
     ///
     /// # Errors
     /// - [`Error::InvalidResource`] if the fence does not belong to this context.
+    /// - [`Error::UnsupportedFeature`] if the backend does not support waiting on fences.
     /// - [`Error::Internal`] if an internal error occurs while waiting for the fence.
     fn wait_fence(&self, fence: &Self::Fence, timeout: Duration) -> Result<bool, Error>;
 
@@ -248,11 +233,14 @@ pub trait Context: Sized {
     /// Submits all pending commands to the GPU for execution. This should be called at the end of
     /// each frame.
     ///
+    /// Returns a fence object that can be used to synchronize with the GPU execution of the
+    /// submitted commands by calling [`Context::wait_fence`].
+    ///
     /// # Errors
     /// - [`Error::InvalidContext`] if the current backend-defined context is no longer valid (e.g.
     ///   lost OpenGL context).
     /// - [`Error::Internal`] if an internal error occurs while submitting the commands.
-    fn present(&self) -> Result<(), Error>;
+    fn present(&self) -> Result<Self::Fence, Error>;
 }
 
 /// The capabilities of the GPU, used for determining what features are supported and the limits of
@@ -339,8 +327,8 @@ pub enum Error {
     Internal(String),
 }
 
-impl core::error::Error for Error {}
-impl core::fmt::Display for Error {
+impl error::Error for Error {}
+impl fmt::Display for Error {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Error::UnsupportedSize => write!(f, "requested size is not supported by the backend"),
@@ -622,6 +610,8 @@ mod framebuffer {
         Color(u8),
         /// Depth attachment
         Depth,
+        /// Stencil attachment
+        Stencil,
     }
 
     /// The layout of a framebuffer, used for creating a framebuffer with the desired
@@ -650,6 +640,25 @@ mod framebuffer {
         pub is_color_bindable: bool,
         /// Whether the depth attachment is expected to be used as a texture that is sampled from.
         pub is_depth_bindable: bool,
+    }
+
+    impl DepthFormat {
+        /// Returns the number of bytes per pixel for this texture format.
+        pub const fn bytes_per_pixel(&self) -> u32 {
+            match self {
+                DepthFormat::D24 => 3,
+                DepthFormat::D32F => 4,
+            }
+        }
+    }
+
+    impl StencilFormat {
+        /// Returns the number of bytes per pixel for this texture format.
+        pub const fn bytes_per_pixel(&self) -> u32 {
+            match self {
+                StencilFormat::S8 => 1,
+            }
+        }
     }
 }
 
@@ -947,13 +956,24 @@ mod pipeline {
 
     impl BlendMode {
         /// Opaque blending mode (overwrite)
-        pub const OPAQUE: Self = Self {
+        pub const OVERWRITE: Self = Self {
             color_src: BlendFactor::One,
             color_dst: BlendFactor::Zero,
             color_op: BlendOp::Add,
 
             alpha_src: BlendFactor::One,
             alpha_dst: BlendFactor::Zero,
+            alpha_op: BlendOp::Add,
+        };
+
+        /// Discard blending mode
+        pub const DISCARD: Self = Self {
+            color_src: BlendFactor::Zero,
+            color_dst: BlendFactor::One,
+            color_op: BlendOp::Add,
+
+            alpha_src: BlendFactor::Zero,
+            alpha_dst: BlendFactor::One,
             alpha_op: BlendOp::Add,
         };
 
@@ -997,7 +1017,7 @@ mod pipeline {
             Self {
                 shader,
                 color_outputs: &[],
-                color_blend: BlendMode::OPAQUE,
+                color_blend: BlendMode::OVERWRITE,
                 depth_test: CompareFn::Always,
                 depth_write: false,
                 stencil_ccw: StencilFace::default(),
@@ -1061,25 +1081,26 @@ mod draw {
         /// Query the time elapsed between the start and the end of the query, in nanoseconds.
         Elapsed,
 
-        /// Query the number of samples that passed the depth and stencil tests.
-        Samples,
-
         /// Query the number of primitives (triangles) generated.
         Primitives,
 
-        /// Query if _any_ sample passed the depth and stencil tests (returns 0 if no samples
-        /// passed).
-        ///
-        /// Less expensive than [`QueryType::Samples`] if you only need to know whether any samples
-        /// passed, and not the exact number of samples that passed.
-        Occlusion,
+        /// Query if any samples passed the depth and stencil tests.
+        Occlusion(OcclusionTest),
+    }
 
+    /// The type of occlusion query to perform.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum OcclusionTest {
+        /// Query the exact number of samples that passed the depth and stencil tests. This is the
+        /// most accurate, but also the most expensive occlusion query type.
+        Samples,
         /// Query if _any_ samples passed the depth and stencil tests (returns 0 if no samples
         /// passed).
-        ///
-        /// Less expensive than [`QueryType::Occlusion`], but may return false positives (i.e. it
-        /// may return true even if no samples passed) due to the conservative nature of the query.
-        OcclusionConservative,
+        Exact,
+        /// Query if _any_ samples passed the depth and stencil tests (returns 0 if no samples
+        /// passed). Fastest, but may return false positives (it may return non-zero even if no
+        /// samples passed) due to the conservative nature of the query.
+        Conservative,
     }
 
     /// A request to the backend to clear a region of a framebuffer with the specified clear

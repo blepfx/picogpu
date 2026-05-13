@@ -6,9 +6,15 @@ mod util;
 use crate::*;
 use ash::vk;
 use std::ffi::CString;
+use std::fmt::Debug;
+use std::ptr::null_mut;
+use std::sync::{Arc, Mutex};
 use util::*;
 
-pub struct Backend {
+#[derive(Clone)]
+pub struct Context(Arc<ContextInner>);
+
+struct ContextInner {
     instance: ash::Instance,
     device: ash::Device,
     queue: vk::Queue,
@@ -16,10 +22,11 @@ pub struct Backend {
     device_memory_properties: vk::PhysicalDeviceMemoryProperties,
     device_limits: vk::PhysicalDeviceLimits,
 
-    command_pool: vk::CommandPool,
     query_pool: vk::QueryPool,
+    fence_pool: Mutex<Vec<vk::Fence>>,
 
-    command_buffer: vk::CommandBuffer,
+    command_pool: Mutex<vk::CommandPool>,
+    command_buffer: Mutex<vk::CommandBuffer>,
 }
 
 #[derive(Debug)]
@@ -42,8 +49,20 @@ pub struct Texture {
 }
 
 #[derive(Debug)]
+pub struct Framebuffer {
+    image: vk::Image,
+    sampler: vk::Sampler,
+}
+
+#[derive(Debug)]
 pub struct Pipeline {
     pipeline: vk::Pipeline,
+}
+
+#[derive(Debug)]
+pub struct Fence {
+    context: Context,
+    fence: vk::Fence,
 }
 
 impl From<ash::LoadingError> for crate::Error {
@@ -54,11 +73,14 @@ impl From<ash::LoadingError> for crate::Error {
 
 impl From<vk::Result> for crate::Error {
     fn from(err: vk::Result) -> Self {
-        Error::Internal(err.to_string())
+        match err {
+            vk::Result::ERROR_DEVICE_LOST => Error::InvalidContext,
+            err => Error::Internal(err.to_string()),
+        }
     }
 }
 
-impl Backend {
+impl Context {
     pub fn new() -> Result<Self, Error> {
         unsafe {
             let entry = ash::Entry::load()?;
@@ -72,12 +94,12 @@ impl Backend {
     }
 }
 
-impl crate::Context for Backend {
+impl crate::Context for Context {
     type Buffer = Buffer;
     type Texture = Texture;
     type Pipeline = Pipeline;
-    type Framebuffer = ();
-    type Fence = ();
+    type Framebuffer = Framebuffer;
+    type Fence = Fence;
     type Query = ();
 
     fn capabilities(&self) -> Capabilities {
@@ -99,12 +121,12 @@ impl crate::Context for Backend {
                     },
             );
 
-            let buffer = self.device.create_buffer(&buffer_info, None).unwrap();
+            let buffer = self.0.device.create_buffer(&buffer_info, None).unwrap();
 
-            let memory_reqs = self.device.get_buffer_memory_requirements(buffer);
+            let memory_reqs = self.0.device.get_buffer_memory_requirements(buffer);
             let memory_type = find_memorytype_index(
                 &memory_reqs,
-                &self.device_memory_properties,
+                &self.0.device_memory_properties,
                 if layout.can_upload || layout.can_download {
                     vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_CACHED
                 } else {
@@ -117,11 +139,12 @@ impl crate::Context for Backend {
                 .allocation_size(memory_reqs.size)
                 .memory_type_index(memory_type);
 
-            let gpu_memory = self.device.allocate_memory(&memory_info, None).unwrap();
-            self.device.bind_buffer_memory(buffer, gpu_memory, 0).unwrap();
+            let gpu_memory = self.0.device.allocate_memory(&memory_info, None).unwrap();
+            self.0.device.bind_buffer_memory(buffer, gpu_memory, 0).unwrap();
 
             let cpu_memory = if layout.can_upload || layout.can_download {
-                self.device
+                self.0
+                    .device
                     .map_memory(gpu_memory, 0, layout.capacity, vk::MemoryMapFlags::empty())
                     .unwrap() as *mut u8
             } else {
@@ -163,8 +186,8 @@ impl crate::Context for Backend {
                 .address_mode_u(texture_wrap(layout.wrap_x))
                 .address_mode_v(texture_wrap(layout.wrap_y));
 
-            let image = self.device.create_image(&image_info, None).unwrap();
-            let sampler = self.device.create_sampler(&sampler_info, None).unwrap();
+            let image = self.0.device.create_image(&image_info, None).unwrap();
+            let sampler = self.0.device.create_sampler(&sampler_info, None).unwrap();
 
             Ok(Texture { image, sampler })
         }
@@ -178,11 +201,13 @@ impl crate::Context for Backend {
             };
 
             let vertex_module = self
+                .0
                 .device
                 .create_shader_module(&vk::ShaderModuleCreateInfo::default().code(shader.vertex_module), None)
                 .unwrap();
 
             let fragment_module = self
+                .0
                 .device
                 .create_shader_module(
                     &vk::ShaderModuleCreateInfo::default().code(shader.fragment_module),
@@ -263,7 +288,7 @@ impl crate::Context for Backend {
                 });
 
             let color_blend_attachments = [vk::PipelineColorBlendAttachmentState {
-                blend_enable: (layout.color_blend != BlendMode::OPAQUE) as vk::Bool32,
+                blend_enable: (layout.color_blend != BlendMode::OVERWRITE) as vk::Bool32,
                 src_color_blend_factor: blend_factor(layout.color_blend.color_src),
                 dst_color_blend_factor: blend_factor(layout.color_blend.color_dst),
                 src_alpha_blend_factor: blend_factor(layout.color_blend.alpha_src),
@@ -290,6 +315,7 @@ impl crate::Context for Backend {
                 .dynamic_state(&dynamic_state);
 
             let pipeline = self
+                .0
                 .device
                 .create_graphics_pipelines(vk::PipelineCache::null(), &[pipeline_info], None)
                 .map_err(|(_, err)| Error::Internal(format!("Failed to create graphics pipeline: {:?}", err)))?[0];
@@ -314,7 +340,8 @@ impl crate::Context for Backend {
 
             core::ptr::copy_nonoverlapping(data.as_ptr(), buffer.cpu_memory.add(offset as usize), data.len());
 
-            self.device
+            self.0
+                .device
                 .flush_mapped_memory_ranges(&[vk::MappedMemoryRange::default()
                     .memory(buffer.gpu_memory)
                     .offset(offset)
@@ -336,7 +363,8 @@ impl crate::Context for Backend {
                 return Err(Error::InvalidBounds);
             }
 
-            self.device
+            self.0
+                .device
                 .invalidate_mapped_memory_ranges(&[vk::MappedMemoryRange::default()
                     .memory(buffer.gpu_memory)
                     .offset(offset)
@@ -353,14 +381,16 @@ impl crate::Context for Backend {
     fn copy_buffer_to_buffer(
         &self,
         dst_buffer: &Self::Buffer,
-        src_buffer: &Self::Buffer,
         dst_offset: u64,
+        src_buffer: &Self::Buffer,
         src_offset: u64,
         size: u64,
     ) -> Result<(), Error> {
         unsafe {
-            self.device.cmd_copy_buffer(
-                self.commands,
+            let buffer = self.0.command_buffer.lock().expect("poisoned");
+
+            self.0.device.cmd_copy_buffer(
+                *buffer,
                 src_buffer.buffer,
                 dst_buffer.buffer,
                 &[vk::BufferCopy {
@@ -377,14 +407,15 @@ impl crate::Context for Backend {
     fn copy_buffer_to_texture(
         &self,
         dst_texture: &Self::Texture,
-        src_buffer: &Self::Buffer,
         dst_bounds: TextureBounds,
-        src_format: TextureFormat,
+        src_buffer: &Self::Buffer,
         src_offset: u64,
     ) -> Result<(), Error> {
         unsafe {
-            self.device.cmd_copy_buffer_to_image(
-                self.command_buffer,
+            let buffer = self.0.command_buffer.lock().expect("poisoned");
+
+            self.0.device.cmd_copy_buffer_to_image(
+                *buffer,
                 src_buffer.buffer,
                 dst_texture.image,
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
@@ -415,7 +446,70 @@ impl crate::Context for Backend {
         }
     }
 
-    fn invalidate_buffer(&self, buffer: &Self::Buffer, offset: u64, size: u64) -> Result<(), Error> {
+    fn copy_framebuffer_to_buffer(
+        &self,
+        dst_buffer: &Self::Buffer,
+        dst_offset: u64,
+        src_framebuffer: &Self::Framebuffer,
+        src_attachment: FramebufferAttachment,
+        src_bounds: TextureBounds,
+    ) -> Result<(), Error> {
+        unsafe {
+            let buffer = self.0.command_buffer.lock().expect("poisoned");
+
+            self.0.device.cmd_copy_image_to_buffer(
+                *buffer,
+                src_framebuffer.image,
+                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                dst_buffer.buffer,
+                &[vk::BufferImageCopy {
+                    buffer_offset: dst_offset,
+                    buffer_row_length: 0,
+                    buffer_image_height: 0,
+                    image_subresource: vk::ImageSubresourceLayers {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        mip_level: 0,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    },
+                    image_offset: vk::Offset3D {
+                        x: src_bounds.x as i32,
+                        y: src_bounds.y as i32,
+                        z: 0,
+                    },
+                    image_extent: vk::Extent3D {
+                        width: src_bounds.width,
+                        height: src_bounds.height,
+                        depth: 1,
+                    },
+                }],
+            );
+
+            Ok(())
+        }
+    }
+
+    fn wait_fence(&self, fence: &Self::Fence, timeout: std::time::Duration) -> Result<bool, Error> {
+        unsafe {
+            let timeout = timeout.as_nanos().try_into().unwrap_or(u64::MAX);
+            let result = self.0.device.wait_for_fences(&[fence.fence], true, timeout);
+            match result {
+                Ok(()) => Ok(true),
+                Err(vk::Result::TIMEOUT) => Ok(false),
+                Err(err) => Err(err.into()),
+            }
+        }
+    }
+
+    fn begin_query(&self, query: QueryType) -> Result<Self::Query, Error> {
+        todo!()
+    }
+
+    fn end_query(&self, query: &Self::Query) -> Result<(), Error> {
+        todo!()
+    }
+
+    fn read_query(&self, query: &Self::Query) -> Result<Option<u64>, Error> {
         todo!()
     }
 
@@ -427,22 +521,58 @@ impl crate::Context for Backend {
         todo!()
     }
 
-    fn present(&self) -> Result<(), Error> {
+    fn present(&self) -> Result<Self::Fence, Error> {
         unsafe {
-            self.device.end_command_buffer(self.command_buffer)?;
-            self.device
-                .queue_submit(self.queue, &[vk::SubmitInfo::default()], vk::Fence::null())?;
-            self.device
-                .free_command_buffers(self.command_pool, &[self.command_buffer]);
-            Ok(())
+            let buffer = self.0.command_buffer.lock().expect("poisoned");
+            let fence = match self.0.fence_pool.lock().expect("poisoned").pop() {
+                Some(fence) => {
+                    self.0.device.reset_fences(&[fence])?;
+                    fence
+                }
+
+                None => self
+                    .0
+                    .device
+                    .create_fence(&vk::FenceCreateInfo::default(), None)
+                    .unwrap(),
+            };
+
+            self.0.device.end_command_buffer(*buffer)?;
+            self.0
+                .device
+                .queue_submit(self.0.queue, &[vk::SubmitInfo::default()], fence)?;
+            self.0.device.free_command_buffers(self.0.command_pool, &[*buffer]);
+
+            Ok(Fence {
+                context: self.clone(),
+                fence,
+            })
         }
     }
 }
 
-impl Drop for Backend {
+impl Debug for Context {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("vulkan::Context").finish_non_exhaustive()
+    }
+}
+
+impl Drop for Fence {
+    fn drop(&mut self) {
+        self.context.0.fence_pool.lock().expect("poisoned").push(self.fence);
+    }
+}
+
+impl Drop for ContextInner {
     fn drop(&mut self) {
         unsafe {
             self.device.device_wait_idle().ok();
+
+            // drop all fences
+            for fence in self.fence_pool.lock().expect("poisoned").drain(..) {
+                self.device.destroy_fence(fence, None);
+            }
+
             self.device.destroy_command_pool(self.command_pool, None);
             self.device.destroy_device(None);
             self.instance.destroy_instance(None);

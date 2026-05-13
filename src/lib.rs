@@ -3,8 +3,8 @@
 //#![deny(clippy::unwrap_used, clippy::expect_used)]
 
 mod context;
-#[cfg(feature = "metal")]
-pub mod metal;
+// #[cfg(feature = "metal")]
+// pub mod metal;
 #[cfg(feature = "opengl")]
 pub mod opengl;
 // #[cfg(feature = "vulkan")]

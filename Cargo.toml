@@ -5,18 +5,18 @@ edition = "2024"
 
 [dependencies]
 glow = { git = "https://github.com/Quant1um/glow", optional = true }
-ash = { version = "0.38", optional = true }
-objc2 = { version = "0.6.2", optional = true }
-objc2-metal = { version = "0.3.2", optional = true }
+# ash = { version = "0.38", optional = true }
+# objc2 = { version = "0.6.2", optional = true }
+# objc2-metal = { version = "0.3.2", optional = true }
 
 [dev-dependencies]
 picoview = { git = "https://github.com/blepfx/picoview.git" }
 
 [features]
-default = ["opengl", "vulkan", "metal"]
+default = ["opengl"]
 opengl = ["dep:glow"]
-vulkan = ["dep:ash"]
-metal = ["dep:objc2", "dep:objc2-metal"]
+# vulkan = ["dep:ash"]
+# metal = ["dep:objc2", "dep:objc2-metal"]
 
 [[example]]
 name = "opengl"

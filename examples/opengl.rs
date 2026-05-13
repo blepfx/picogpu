@@ -151,7 +151,9 @@ fn main() {
                     current_query = None;
                 }
 
-                let query = current_query.get_or_insert_with(|| context.begin_query(QueryType::Elapsed).unwrap());
+                let query = current_query
+                    .is_none()
+                    .then(|| context.begin_query(QueryType::Elapsed).unwrap());
 
                 context
                     .clear(
@@ -198,8 +200,15 @@ fn main() {
                         .unwrap();
                 }
 
-                context.end_query(query).unwrap();
-                context.present().unwrap();
+                if let Some(query) = query {
+                    context.end_query(&query).unwrap();
+                    current_query = Some(query);
+                }
+
+                let fence = context.present().unwrap();
+
+                let is_signalled = context.wait_fence(&fence, Duration::ZERO).unwrap();
+                dbg!(is_signalled);
             }
 
             picoview::Event::WindowClose => {

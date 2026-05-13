@@ -11,7 +11,6 @@ pub struct Features {
 
     pub debug_callback: bool,
     pub fence_sync_objects: bool,
-    pub invalidate_buffer_sub_data: bool,
 
     pub query_time_elapsed: bool,
     pub query_occlusion: bool,
@@ -62,8 +61,6 @@ impl Features {
             let fence_sync_objects = !version.is_embedded && (version.major, version.minor) >= (3, 2)
                 || version.is_embedded && (version.major, version.minor) >= (3, 0)
                 || extensions.contains("GL_ARB_sync");
-            let invalidate_buffer_sub_data = !version.is_embedded && (version.major, version.minor) >= (4, 3)
-                || extensions.contains("GL_ARB_invalidate_subdata");
             let debug_callback = !version.is_embedded && (version.major, version.minor) >= (4, 3)
                 || extensions.contains("GL_ARB_debug_output")
                 || extensions.contains("GL_KHR_debug");
@@ -83,7 +80,7 @@ impl Features {
             let max_color_attachments = gl.get_parameter_i32(glow::MAX_COLOR_ATTACHMENTS) as u32;
             let max_draw_buffers = gl.get_parameter_i32(glow::MAX_DRAW_BUFFERS) as u32;
 
-            if !baseline_support {
+            if !baseline_support || !uniform_buffers {
                 return None;
             }
 
@@ -93,7 +90,6 @@ impl Features {
                 storage_buffers,
 
                 fence_sync_objects,
-                invalidate_buffer_sub_data,
                 debug_callback,
 
                 query_samples_primitives,
@@ -115,8 +111,10 @@ impl Features {
                     0
                 },
 
-                max_storage_buffer_size: if storage_buffers {
-                    gl.get_parameter_i32(glow::MAX_SHADER_STORAGE_BLOCK_SIZE) as u32
+                max_uniform_buffer_bindings: if uniform_buffers {
+                    let vertex = gl.get_parameter_i32(glow::MAX_VERTEX_UNIFORM_BLOCKS) as u32;
+                    let fragment = gl.get_parameter_i32(glow::MAX_FRAGMENT_UNIFORM_BLOCKS) as u32;
+                    vertex.min(fragment)
                 } else {
                     0
                 },
@@ -127,10 +125,10 @@ impl Features {
                     1
                 },
 
-                storage_buffer_offset_alignment: if storage_buffers {
-                    gl.get_parameter_i32(glow::SHADER_STORAGE_BUFFER_OFFSET_ALIGNMENT) as u32
+                max_storage_buffer_size: if storage_buffers {
+                    gl.get_parameter_i32(glow::MAX_SHADER_STORAGE_BLOCK_SIZE) as u32
                 } else {
-                    1
+                    0
                 },
 
                 max_storage_buffer_bindings: if storage_buffers {
@@ -141,12 +139,10 @@ impl Features {
                     0
                 },
 
-                max_uniform_buffer_bindings: if uniform_buffers {
-                    let vertex = gl.get_parameter_i32(glow::MAX_VERTEX_UNIFORM_BLOCKS) as u32;
-                    let fragment = gl.get_parameter_i32(glow::MAX_FRAGMENT_UNIFORM_BLOCKS) as u32;
-                    vertex.min(fragment)
+                storage_buffer_offset_alignment: if storage_buffers {
+                    gl.get_parameter_i32(glow::SHADER_STORAGE_BUFFER_OFFSET_ALIGNMENT) as u32
                 } else {
-                    0
+                    1
                 },
             })
         }
@@ -395,10 +391,15 @@ pub unsafe fn apply_pipeline(gl: &glow::Context, pipeline: &super::Pipeline) {
         gl.bind_vertex_array(Some(pipeline.vertex_array));
 
         // color blend
-        if pipeline.color_blend == BlendMode::OPAQUE {
+        if pipeline.color_blend == BlendMode::OVERWRITE {
             gl.disable(glow::BLEND);
+            gl.color_mask(true, true, true, true);
+        } else if pipeline.color_blend == BlendMode::DISCARD {
+            gl.disable(glow::BLEND);
+            gl.color_mask(false, false, false, false);
         } else {
             gl.enable(glow::BLEND);
+            gl.color_mask(true, true, true, true);
             gl.blend_func_separate(
                 blend_factor(pipeline.color_blend.color_src),
                 blend_factor(pipeline.color_blend.color_dst),
@@ -524,6 +525,15 @@ pub fn compare_fn(compare: CompareFn) -> u32 {
     }
 }
 
+pub fn texture_wrap(wrap: TextureWrap) -> u32 {
+    match wrap {
+        TextureWrap::Repeat => glow::REPEAT,
+        TextureWrap::Mirror => glow::MIRRORED_REPEAT,
+        TextureWrap::Clamp => glow::CLAMP_TO_EDGE,
+        TextureWrap::Border => glow::CLAMP_TO_BORDER,
+    }
+}
+
 pub fn color_format(format: TextureFormat) -> (u32, u32, u32) {
     match format {
         TextureFormat::R8 => (glow::RED, glow::UNSIGNED_BYTE, glow::R8),
@@ -570,11 +580,11 @@ pub fn buffer_hint(writable: bool, readable: bool) -> u32 {
 
 pub fn query_target(query: QueryType) -> u32 {
     match query {
-        QueryType::Samples => glow::SAMPLES_PASSED,
         QueryType::Elapsed => glow::TIME_ELAPSED,
         QueryType::Primitives => glow::PRIMITIVES_GENERATED,
-        QueryType::Occlusion => glow::ANY_SAMPLES_PASSED,
-        QueryType::OcclusionConservative => glow::ANY_SAMPLES_PASSED_CONSERVATIVE,
+        QueryType::Occlusion(OcclusionTest::Samples) => glow::SAMPLES_PASSED,
+        QueryType::Occlusion(OcclusionTest::Exact) => glow::ANY_SAMPLES_PASSED,
+        QueryType::Occlusion(OcclusionTest::Conservative) => glow::ANY_SAMPLES_PASSED_CONSERVATIVE,
     }
 }
 
